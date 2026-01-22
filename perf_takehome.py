@@ -106,6 +106,19 @@ class KernelBuilder:
 
         return slots
 
+    def build_vhash(self, val_hash_addr_v, vtmp1, vtmp2, round, i):
+        slots = []
+        for hi, (op1, val1, op2, op3, val3) in enumerate(HASH_STAGES):
+            # slots.append(("valu", MultiSlot(slots=((op1, vtmp1, val_hash_addr_v, self.scratch_const(val1)),(op3, vtmp2, val_hash_addr_v, self.scratch_const(val3))))))
+            slots.append(("valu", ("vbroadcast", vtmp1, self.scratch_const(val1))))
+            slots.append(("valu", (op1, vtmp1, val_hash_addr_v, vtmp1)))
+            
+            slots.append(("valu", ("vbroadcast", vtmp2, self.scratch_const(val3))))
+            slots.append(("valu", (op3, vtmp2, val_hash_addr_v,vtmp2)))
+
+            slots.append(("valu", (op2, val_hash_addr_v, vtmp1, vtmp2)))
+        return slots
+
     def build_kernel(
         self, forest_height: int, n_nodes: int, batch_size: int, rounds: int
     ):
@@ -153,6 +166,11 @@ class KernelBuilder:
         # tmp_val = self.alloc_scratch("tmp_val")
         # tmp_node_val = self.alloc_scratch("tmp_node_val")
         tmp_addr = self.alloc_scratch("tmp_addr")
+
+        # Vector scratch registers
+        vtmp1 = self.alloc_scratch("vtmp1", vsize)
+        vtmp2 = self.alloc_scratch("vtmp2", vsize)
+        vtmp3 = self.alloc_scratch("vtmp3", vsize)
 
         tmp_idx_v = self.alloc_scratch('tmp_idx_v', vsize)
         vtmp_idx        = [tmp_idx_v+x for x in range(vsize)]
@@ -202,12 +220,18 @@ class KernelBuilder:
                     # node_val = mem[forest_values_p + idx]
                     body.append(("alu", ("+", vtmp_addr[j], self.scratch["forest_values_p"], vtmp_idx[j])))
                     body.append(("load", ("load", vtmp_node_val[j], vtmp_addr[j])))
+
                     # body.append(("debug", ("compare", vtmp_node_val[j], (round, i, "node_val"))))
                     # val = myhash(val ^ node_val)
                     body.append(("alu", ("^", vtmp_val[j], vtmp_val[j], vtmp_node_val[j])))
-                    body.extend(self.build_hash(vtmp_val[j], tmp1, tmp2, round, i))
+
+                    # body.extend(self.build_hash(vtmp_val[j], tmp1, tmp2, round, i))
+                body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
+                self.add("debug", ("comment", "Vhash finished"))
                     # body.append(("debug", ("compare", vtmp_val[j], (round, i, "hashed_val"))))
                     # idx = 2*idx + (1 if val % 2 == 0 else 2)
+                for j in range(vsize):
+                    i_j_const = self.scratch_const(i+j)
                     body.append(("alu", ("%", tmp1, vtmp_val[j], two_const)))
                     body.append(("alu", ("==", tmp1, tmp1, zero_const)))
                     body.append(("flow", ("select", tmp3, tmp1, one_const, two_const)))
@@ -316,8 +340,8 @@ class Tests(unittest.TestCase):
     #             )
 
     def test_kernel_cycles(self):
-        # do_kernel_test(1, 1, 8, trace=True, prints=True)
-        do_kernel_test(10, 16, 256, trace=False, prints=False)
+        do_kernel_test(1, 1, 8, trace=True, prints=True)
+        # do_kernel_test(10, 16, 256, trace=False, prints=False)
 
 
 # To run all the tests:
