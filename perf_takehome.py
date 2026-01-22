@@ -189,31 +189,15 @@ class KernelBuilder:
             for i in range(0, batch_size, vsize):
                 # print(f'round {i}')
                 i_const = self.scratch_const(i)
-                # idx = mem[inp_indices_p + i + j]
-                #old
-                # body.append(("alu", ("+", vtmp_addr[j], self.scratch["inp_indices_p"], i_j_const)))
-                # body.append(("load", ("load", vtmp_idx[j], vtmp_addr[j])))
-                # body.append(("debug", ("compare", vtmp_idx[j], (round, i, "idx"))))
-                # new
-                # calculate index
+                # idx = mem[inp_indices_p + i]
                 body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
-                # load indicies vector
                 body.append(("load", ("vload", tmp_idx_v, tmp_addr)))
-                #
 
-                # val = mem[inp_values_p + i + j]
-                #===
-                #old
-                # body.append(("alu", ("+", vtmp_addr[j], self.scratch["inp_values_p"], i_j_const)))
-                # body.append(("load", ("load", vtmp_val[j], vtmp_addr[j])))
-                #===
-                #new
-                #calculate beginning of vector, which is inp_value_p + i
+                # val = mem[inp_values_p + i]
                 body.append(("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const)))
-                #load vector
                 body.append(("load", ("vload", tmp_val_v, tmp_addr)))
-                #===
-                # continue
+
+
                 for j in range(vsize):
                     i_j_const = self.scratch_const(i+j)
                     # body.append(("debug", ("compare", vtmp_val[j], (round, i, "val"))))
@@ -223,33 +207,51 @@ class KernelBuilder:
 
                     # body.append(("debug", ("compare", vtmp_node_val[j], (round, i, "node_val"))))
                     # val = myhash(val ^ node_val)
-                    body.append(("alu", ("^", vtmp_val[j], vtmp_val[j], vtmp_node_val[j])))
-
+                    # body.append(("alu", ("^", vtmp_val[j], vtmp_val[j], vtmp_node_val[j])))
                     # body.extend(self.build_hash(vtmp_val[j], tmp1, tmp2, round, i))
+
+                # val = myhash(val ^ node_val)
+                body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
                 body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
                 self.add("debug", ("comment", "Vhash finished"))
                     # body.append(("debug", ("compare", vtmp_val[j], (round, i, "hashed_val"))))
-                    # idx = 2*idx + (1 if val % 2 == 0 else 2)
+                
+                # idx = 2*idx + (1 if val % 2 == 0 else 2)
+                body.append(("valu", ("vbroadcast", vtmp1, two_const)))
+                body.append(("valu", ("%", vtmp1, tmp_val_v, vtmp1)))
+
+                body.append(("valu", ("vbroadcast", vtmp2, zero_const)))
+                body.append(("valu", ("==", vtmp1, vtmp1, vtmp2)))
+
+                body.append(("valu", ("vbroadcast", vtmp2, one_const)))
+                body.append(("valu", ("vbroadcast", vtmp3, two_const)))
+                body.append(("flow", ("vselect", vtmp1, vtmp1, vtmp2, vtmp3)))
+
+                body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtmp3, vtmp1)))
+
+                # TODO - this can be mitigated
+                body.append(("valu", ("vbroadcast", vtmp2, zero_const)))
+                body.append(("valu", ("vbroadcast", vtmp3, self.scratch["n_nodes"])))
+                body.append(("valu", ("<", vtmp1, tmp_idx_v, vtmp3)))
+                body.append(("flow", ("vselect", tmp_idx_v, vtmp1, tmp_idx_v, vtmp2)))
+
                 for j in range(vsize):
                     i_j_const = self.scratch_const(i+j)
-                    body.append(("alu", ("%", tmp1, vtmp_val[j], two_const)))
-                    body.append(("alu", ("==", tmp1, tmp1, zero_const)))
-                    body.append(("flow", ("select", tmp3, tmp1, one_const, two_const)))
-                    body.append(("alu", ("*", vtmp_idx[j], vtmp_idx[j], two_const)))
-                    body.append(("alu", ("+", vtmp_idx[j], vtmp_idx[j], tmp3)))
+                    # body.append(("alu", ("%", tmp1, vtmp_val[j], two_const)))
+                    # body.append(("alu", ("==", tmp1, tmp1, zero_const)))
+                    # body.append(("flow", ("select", tmp3, vtmp1+j, one_const, two_const)))
+                    # body.append(("alu", ("*", vtmp_idx[j], vtmp_idx[j], two_const)))
+                    # body.append(("alu", ("+", vtmp_idx[j], vtmp_idx[j], vtmp1+j)))
                     # body.append(("debug", ("compare", vtmp_idx[j], (round, i, "next_idx"))))
+
                     # idx = 0 if idx >= n_nodes else idx
-                    body.append(("alu", ("<", tmp1, vtmp_idx[j], self.scratch["n_nodes"])))
-                    body.append(("flow", ("select", vtmp_idx[j], tmp1, vtmp_idx[j], zero_const)))
+                    # body.append(("alu", ("<", tmp1, vtmp_idx[j], self.scratch["n_nodes"])))
+                    # body.append(("flow", ("select", vtmp_idx[j], tmp1, vtmp_idx[j], zero_const)))
                     # body.append(("debug", ("compare", vtmp_idx[j], (round, i, "wrapped_idx"))))
                 # # mem[inp_indices_p + i] = idx
-                # body.append(("alu", ("+", vtmp_addr[j], self.scratch["inp_indices_p"], i_j_const)))
-                # body.append(("store", ("store", vtmp_addr[j], vtmp_idx[j])))
                 body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
                 body.append(("store", ("vstore", tmp_addr, tmp_idx_v)))
                 # # mem[inp_values_p + i] = val
-                # body.append(("alu", ("+", vtmp_addr[j], self.scratch["inp_values_p"], i_j_const)))
-                # body.append(("store", ("store", vtmp_addr[j], vtmp_val[j])))
                 body.append(("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const)))
                 body.append(("store", ("vstore", tmp_addr, tmp_val_v)))
 
@@ -340,8 +342,8 @@ class Tests(unittest.TestCase):
     #             )
 
     def test_kernel_cycles(self):
-        do_kernel_test(1, 1, 8, trace=True, prints=True)
-        # do_kernel_test(10, 16, 256, trace=False, prints=False)
+        # do_kernel_test(1, 1, 8, trace=True, prints=True)
+        do_kernel_test(10, 16, 256, trace=False, prints=False)
 
 
 # To run all the tests:
