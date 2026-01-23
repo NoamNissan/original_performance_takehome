@@ -90,8 +90,8 @@ class KernelBuilder:
         combined = []
         assert len(slots) == len(set([s[1] for s in slots])), f'slots: {slots=}'
         while len(slots) > 0:
-            # limit = SLOT_LIMITS[e]
-            limit = 1
+            limit = SLOT_LIMITS[e]
+            # limit = 1
             combined.append({e: slots[:limit]})
             slots = slots[limit:]
         return combined
@@ -105,15 +105,16 @@ class KernelBuilder:
         # combine every mb_size iterations
         mb_size = self.mb_size
         insts = []
-        while len(body) > 0:
-            stories = [body[i*iter_length:(i+1)*iter_length] for i in range(int(min(mb_size, batches)))]
-            assert all([len(s) == iter_length for s in stories])
+        while batches > 0:
+            mb_size = int(min(mb_size, batches))
+            stories = [body[i*iter_length:(i+1)*iter_length] for i in range(mb_size)]
+            assert all([len(s) == iter_length for s in stories]), f'lengths={[len(s) for s in stories]}'
             for i in range(iter_length):
                 uncombined = [s[i] for s in stories]
                 combined = self.combine_insts(uncombined)
                 insts.extend(combined)
             body = body[mb_size * iter_length:]
-
+            batches -= mb_size
         return insts
 
 
@@ -218,7 +219,7 @@ class KernelBuilder:
         self.add("debug", ("comment", "Starting loop"))
 
 
-        self.mb_size = 2
+        self.mb_size = 6
 
         # Scalar scratch registers
         # tmp_idx = self.alloc_scratch("tmp_idx")
