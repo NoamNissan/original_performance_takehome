@@ -77,7 +77,6 @@ class KernelBuilder:
         assert len(set(engines)) == 1, f'strange engine type set {set(engines)=}'
         e = engines[0]
 
-        # slots = [v for _, v in insts]
         slots = []
         for _, slot in insts:
             if isinstance(slot, MultiSlot):
@@ -90,31 +89,41 @@ class KernelBuilder:
         combined = []
         assert len(slots) == len(set([s[1] for s in slots])), f'slots: {slots=}'
         while len(slots) > 0:
+
             limit = SLOT_LIMITS[e]
-            # limit = 1
+            # assert len(slots) % limit == 0, f'{insts=}'
             combined.append({e: slots[:limit]})
             slots = slots[limit:]
         return combined
 
-    def build_compress(self, body: list, batch_size: int):
+    def build_compress(self, body: list, batch_size: int, rounds: int):
         assert len(body) % (batch_size/VLEN) == 0
         iter_length = int(len(body) / (batch_size/VLEN))
-        print(f'{iter_length=}')
-        batches = len(body)/iter_length
+
+        round_length = int(iter_length / rounds)
+
+        batches = int(len(body)/round_length)
+        print(f'{len(body)=} {round_length=} {batches=}')
 
         # combine every mb_size iterations
-        mb_size = self.mb_size
+        # mb_size = self.mb_size
         insts = []
         while batches > 0:
-            mb_size = int(min(mb_size, batches))
-            stories = [body[i*iter_length:(i+1)*iter_length] for i in range(mb_size)]
-            assert all([len(s) == iter_length for s in stories]), f'lengths={[len(s) for s in stories]}'
-            for i in range(iter_length):
+            mb_size = int(min(self.mb_size, batches))
+            # print(f'{batches=} {mb_size=}')
+            # stories = [body[i*iter_length:(i+1)*iter_length] for i in range(mb_size)]
+            stories = [body[i*round_length:(i+1)*round_length] for i in range(mb_size)]
+
+
+            assert all([len(s) == round_length for s in stories]), f'lengths={[len(s) for s in stories]}'
+            
+            for i in range(round_length):
                 uncombined = [s[i] for s in stories]
                 combined = self.combine_insts(uncombined)
                 insts.extend(combined)
-            body = body[mb_size * iter_length:]
+            body = body[mb_size * round_length:]
             batches -= mb_size
+            # print(f'{len(insts)=}')
         return insts
 
 
@@ -237,6 +246,10 @@ class KernelBuilder:
         arr_tmp_node_val_v  = [self.alloc_scratch(f'tmp_node_val_v_{i}', VLEN) for i in range(self.mb_size)]
         arr_tmp_addr_v      = [self.alloc_scratch(f'tmp_addr_v_{i}', VLEN) for i in range(self.mb_size)]
 
+        vbatch_size = int(batch_size/VLEN)
+        mega_idx_v = [self.alloc_scratch(f'mega_idx_v_{i}', VLEN) for i in range(vbatch_size)]
+        mega_val_v = [self.alloc_scratch(f'mega_val_v_{i}', VLEN) for i in range(vbatch_size)]
+
         vzero = self.alloc_scratch('vzero', VLEN)
         vone = self.alloc_scratch('vone', VLEN)
         vtwo = self.alloc_scratch('vtwo', VLEN)
@@ -253,30 +266,56 @@ class KernelBuilder:
             self.add(*i)
 
         assert batch_size % VLEN == 0
-        body = []  # array of slots
+
+        body = []
         for i in range(0, batch_size, VLEN):
-            mb_num = int(i/VLEN) % self.mb_size
+            vbatch = int(i/VLEN)
 
-            vtmp1 = arr_vtmp1[mb_num]
-            vtmp2 = arr_vtmp2[mb_num]
+            # The index doesn't matter in this case
+            tmp_addr_idx = arr_tmp_addr_idx[0]
+            tmp_addr_val = arr_tmp_addr_val[0]
 
-            tmp_addr_idx = arr_tmp_addr_idx[mb_num]
-            tmp_addr_val = arr_tmp_addr_val[mb_num]
+            tmp_idx_v = mega_idx_v[vbatch]
+            tmp_val_v = mega_val_v[vbatch]
 
-            tmp_idx_v = arr_tmp_idx_v[mb_num]
-            tmp_val_v = arr_tmp_val_v[mb_num]
-            tmp_node_val_v = arr_tmp_node_val_v[mb_num]
-            tmp_addr_v = arr_tmp_addr_v[mb_num]
-
-             # print(f'round {i}')
             i_const = self.scratch_const(i)
             # idx = mem[inp_indices_p + i]
             # val = mem[inp_values_p + i]
             body.append(("alu", MultiSlot(slots=(("+", tmp_addr_idx, self.scratch["inp_indices_p"], i_const),
                 ("+", tmp_addr_val, self.scratch["inp_values_p"], i_const)))))
             body.append(("load",MultiSlot(slots= (("vload", tmp_idx_v, tmp_addr_idx),("vload", tmp_val_v, tmp_addr_val)))))
+        
+        body_instrs = self.build_multi(body)
+        self.instrs.extend(body_instrs)
 
-            for round in range(rounds):
+
+        body = []  # array of slots
+        round_num = -1
+        for round in range(rounds):
+            for i in range(0, batch_size, VLEN):
+                vbatch = int(i/VLEN)
+                round_num += 1
+                # continue here: the last bug was getting mb_num to consider round number
+                # mb_num = (int(i/VLEN)) % self.mb_size
+                mb_num = round_num % self.mb_size
+
+                vtmp1 = arr_vtmp1[mb_num]
+                vtmp2 = arr_vtmp2[mb_num]
+
+                tmp_addr_idx = arr_tmp_addr_idx[mb_num]
+                tmp_addr_val = arr_tmp_addr_val[mb_num]
+
+                # tmp_idx_v = arr_tmp_idx_v[mb_num]
+                # tmp_val_v = arr_tmp_val_v[mb_num]
+                tmp_idx_v = mega_idx_v[vbatch]
+                tmp_val_v = mega_val_v[vbatch]
+
+                tmp_node_val_v = arr_tmp_node_val_v[mb_num]
+                tmp_addr_v = arr_tmp_addr_v[mb_num]
+
+                 # print(f'round {i}')
+                i_const = self.scratch_const(i)
+
                 body.append(("valu", ("+", tmp_addr_v, tmp_idx_v, vforest_values_p)))
                 for j in range(VLEN):
                     # node_val = mem[forest_values_p + idx]
@@ -298,30 +337,61 @@ class KernelBuilder:
                 body.append(("valu", ("<", vtmp1, tmp_idx_v, vn_nodes)))
                 body.append(("flow", ("vselect", tmp_idx_v, vtmp1, tmp_idx_v, vzero)))
             # break
-            # # mem[inp_indices_p + i] = idx
-            body.append(("alu", ("+", tmp_addr_idx, self.scratch["inp_indices_p"], i_const)))
-            body.append(("store", ("vstore", tmp_addr_idx, tmp_idx_v)))
-            # # mem[inp_values_p + i] = val
-            body.append(("alu", ("+", tmp_addr_val, self.scratch["inp_values_p"], i_const)))
-            body.append(("store", ("vstore", tmp_addr_val, tmp_val_v)))
+                
+                # body.append(("alu", MultiSlot(slots=(("+", tmp_addr_idx, self.scratch["inp_indices_p"], i_const),
+                #                                 ("+", tmp_addr_val, self.scratch["inp_values_p"], i_const)))))
+                # body.append(("store", MultiSlot(slots=(("vstore", tmp_addr_idx, tmp_idx_v), 
+                #                                 ("vstore", tmp_addr_val, tmp_val_v)))))
 
         # now combine everything
         # body_instrs = self.build_multi(body)
-        body_instrs = self.build_compress(body, batch_size)
+        body_instrs = self.build_compress(body, batch_size, rounds)
         self.instrs.extend(body_instrs)
+
+
+        body = []
+        for i in range(0, batch_size, VLEN):
+            vbatch = int(i/VLEN)
+
+            # The index doesn't matter in this case
+            tmp_addr_idx = arr_tmp_addr_idx[0]
+            tmp_addr_val = arr_tmp_addr_val[0]
+
+            tmp_idx_v = mega_idx_v[vbatch]
+            tmp_val_v = mega_val_v[vbatch]
+
+            i_const = self.scratch_const(i)
+            # mem[inp_indices_p + i] = idx
+            # mem[inp_values_p + i] = val
+            body.append(("alu", MultiSlot(slots=(("+", tmp_addr_idx, self.scratch["inp_indices_p"], i_const),
+                                            ("+", tmp_addr_val, self.scratch["inp_values_p"], i_const)))))
+            body.append(("store", MultiSlot(slots=(("vstore", tmp_addr_idx, tmp_idx_v), 
+                                            ("vstore", tmp_addr_val, tmp_val_v)))))
+
+        body_instrs = self.build_multi(body)
+        self.instrs.extend(body_instrs)
+
+
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
 
         used = 0
         total = 0
+        gap = 0
         for i in self.instrs:
-            # print(i)
+            # if i % 1000 == 0:
+            #     print(total)
             for e, slots in i.items():
-                used += len(slots)
+                if e == 'debug':
+                    continue
+                if len(slots) < SLOT_LIMITS[e] and e != 'debug':
+                    # print(f'{e=} {slots=}, {len(slots)=} {SLOT_LIMITS[e]=}')
+                    gap += SLOT_LIMITS[e] - len(slots)
+                used  += len(slots)
                 total += SLOT_LIMITS[e]
-        print(f'efficiency: {used=} {total=} ratio={1.0*used/total}')
+        print(f'efficiency: {used=} {total=} {gap=} ratio={1.0*used/total}')
 
-        # print(f'scratch used: {self.scratch_ptr=}')
+        print(f'scratch used: {self.scratch_ptr=}')
 
 BASELINE = 147734
 
@@ -405,7 +475,8 @@ class Tests(unittest.TestCase):
     #             )
 
     def test_kernel_cycles(self):
-        # do_kernel_test(1, 1, 16, trace=True, prints=True)
+        # do_kernel_test(1, 2, 64, trace=True, prints=True)
+        # do_kernel_test(1, 16, 240, trace=False, prints=False)
         do_kernel_test(10, 16, 256, trace=False, prints=False)
 
 
