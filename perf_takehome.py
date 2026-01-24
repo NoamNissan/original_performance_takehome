@@ -270,10 +270,10 @@ class KernelBuilder:
         body = []
         for i in range(0, batch_size, VLEN):
             vbatch = int(i/VLEN)
+            mb_num = vbatch % self.mb_size
 
-            # The index doesn't matter in this case
-            tmp_addr_idx = arr_tmp_addr_idx[0]
-            tmp_addr_val = arr_tmp_addr_val[0]
+            tmp_addr_idx = arr_tmp_addr_idx[mb_num]
+            tmp_addr_val = arr_tmp_addr_val[mb_num]
 
             tmp_idx_v = mega_idx_v[vbatch]
             tmp_val_v = mega_val_v[vbatch]
@@ -285,7 +285,7 @@ class KernelBuilder:
                 ("+", tmp_addr_val, self.scratch["inp_values_p"], i_const)))))
             body.append(("load",MultiSlot(slots= (("vload", tmp_idx_v, tmp_addr_idx),("vload", tmp_val_v, tmp_addr_val)))))
         
-        body_instrs = self.build_multi(body)
+        body_instrs = self.build_compress(body, batch_size, 1)
         self.instrs.extend(body_instrs)
 
 
@@ -338,11 +338,6 @@ class KernelBuilder:
                 body.append(("flow", ("vselect", tmp_idx_v, vtmp1, tmp_idx_v, vzero)))
             # break
                 
-                # body.append(("alu", MultiSlot(slots=(("+", tmp_addr_idx, self.scratch["inp_indices_p"], i_const),
-                #                                 ("+", tmp_addr_val, self.scratch["inp_values_p"], i_const)))))
-                # body.append(("store", MultiSlot(slots=(("vstore", tmp_addr_idx, tmp_idx_v), 
-                #                                 ("vstore", tmp_addr_val, tmp_val_v)))))
-
         # now combine everything
         # body_instrs = self.build_multi(body)
         body_instrs = self.build_compress(body, batch_size, rounds)
@@ -352,10 +347,10 @@ class KernelBuilder:
         body = []
         for i in range(0, batch_size, VLEN):
             vbatch = int(i/VLEN)
+            mb_num = vbatch % self.mb_size
 
-            # The index doesn't matter in this case
-            tmp_addr_idx = arr_tmp_addr_idx[0]
-            tmp_addr_val = arr_tmp_addr_val[0]
+            tmp_addr_idx = arr_tmp_addr_idx[mb_num]
+            tmp_addr_val = arr_tmp_addr_val[mb_num]
 
             tmp_idx_v = mega_idx_v[vbatch]
             tmp_val_v = mega_val_v[vbatch]
@@ -368,7 +363,7 @@ class KernelBuilder:
             body.append(("store", MultiSlot(slots=(("vstore", tmp_addr_idx, tmp_idx_v), 
                                             ("vstore", tmp_addr_val, tmp_val_v)))))
 
-        body_instrs = self.build_multi(body)
+        body_instrs = self.build_compress(body, batch_size, 1)
         self.instrs.extend(body_instrs)
 
 
