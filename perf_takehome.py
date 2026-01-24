@@ -295,48 +295,37 @@ class KernelBuilder:
             for i in range(0, batch_size, VLEN):
                 vbatch = int(i/VLEN)
                 round_num += 1
-                # continue here: the last bug was getting mb_num to consider round number
-                # mb_num = (int(i/VLEN)) % self.mb_size
+                # mb_num = vbatch % self.mb_size
                 mb_num = round_num % self.mb_size
 
                 vtmp1 = arr_vtmp1[mb_num]
                 vtmp2 = arr_vtmp2[mb_num]
 
-                tmp_addr_idx = arr_tmp_addr_idx[mb_num]
-                tmp_addr_val = arr_tmp_addr_val[mb_num]
-
-                # tmp_idx_v = arr_tmp_idx_v[mb_num]
-                # tmp_val_v = arr_tmp_val_v[mb_num]
                 tmp_idx_v = mega_idx_v[vbatch]
                 tmp_val_v = mega_val_v[vbatch]
 
                 tmp_node_val_v = arr_tmp_node_val_v[mb_num]
                 tmp_addr_v = arr_tmp_addr_v[mb_num]
 
-                 # print(f'round {i}')
-                i_const = self.scratch_const(i)
-
                 body.append(("valu", ("+", tmp_addr_v, tmp_idx_v, vforest_values_p)))
                 for j in range(VLEN):
                     # node_val = mem[forest_values_p + idx]
                     body.append(("load", ("load_offset", tmp_node_val_v, tmp_addr_v, j)))
-                # break
+
                 # val = myhash(val ^ node_val)
                 body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
-                # val = myhash(val ^ node_val)
                 body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
                 self.add("debug", ("comment", "Vhash finished"))
                 
+
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
                 body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
-                body.append(("valu", ("==", vtmp1, vtmp1, vzero)))
-                body.append(("flow", ("vselect", vtmp1, vtmp1, vone, vtwo)))
+                body.append(("valu", ("+", vtmp1, vtmp1, vone)))
                 body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
 
                 # idx = 0 if idx >= n_nodes else idx
                 body.append(("valu", ("<", vtmp1, tmp_idx_v, vn_nodes)))
                 body.append(("flow", ("vselect", tmp_idx_v, vtmp1, tmp_idx_v, vzero)))
-            # break
                 
         # now combine everything
         # body_instrs = self.build_multi(body)
