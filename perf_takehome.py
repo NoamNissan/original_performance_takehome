@@ -288,10 +288,53 @@ class KernelBuilder:
         body_instrs = self.build_compress(body, batch_size, 1)
         self.instrs.extend(body_instrs)
 
-
+        # First round, load tmp_node_val_v using broadcast
         body = []  # array of slots
         round_num = -1
-        for round in range(forest_height):
+        for round in range(1):
+            for i in range(0, batch_size, VLEN):
+                vbatch = int(i/VLEN)
+                round_num += 1
+                # mb_num = vbatch % self.mb_size
+                mb_num = round_num % self.mb_size
+
+                vtmp1 = arr_vtmp1[mb_num]
+                vtmp2 = arr_vtmp2[mb_num]
+
+                tmp_idx_v = mega_idx_v[vbatch]
+                tmp_val_v = mega_val_v[vbatch]
+
+                tmp_node_val_v = arr_tmp_node_val_v[mb_num]
+                tmp_addr_v = arr_tmp_addr_v[mb_num]
+
+                body.append(("valu", ("+", tmp_addr_v, tmp_idx_v, vforest_values_p)))
+                body.append(("load", ("load", vtmp1, tmp_addr_v)))
+                body.append(("valu", ("vbroadcast", tmp_node_val_v, vtmp1)))
+                # for j in range(VLEN):
+                    # node_val = mem[forest_values_p + idx]
+                    # body.append(("load", ("load_offset", tmp_node_val_v, tmp_addr_v, j)))
+
+                # val = myhash(val ^ node_val)
+                body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
+                body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
+                self.add("debug", ("comment", "Vhash finished"))
+                
+
+                # idx = 2*idx + (1 if val % 2 == 0 else 2)
+                # Not needed for wrap-around because it always happens in the middle iteration
+                body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
+                body.append(("valu", ("+", vtmp1, vtmp1, vone)))
+                body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
+
+        # now combine everything
+        # body_instrs = self.build_multi(body)
+        body_instrs = self.build_compress(body, batch_size, 1)
+        self.instrs.extend(body_instrs)
+
+        # Run until wrap-around
+        body = []  # array of slots
+        round_num = -1
+        for round in range(forest_height-1):
             for i in range(0, batch_size, VLEN):
                 vbatch = int(i/VLEN)
                 round_num += 1
@@ -330,9 +373,10 @@ class KernelBuilder:
                 
         # now combine everything
         # body_instrs = self.build_multi(body)
-        body_instrs = self.build_compress(body, batch_size, forest_height)
+        body_instrs = self.build_compress(body, batch_size, forest_height-1)
         self.instrs.extend(body_instrs)
 
+        # Wrap around
         body = []  # array of slots
         round_num = -1
         for round in range(1):
@@ -369,9 +413,54 @@ class KernelBuilder:
         body_instrs = self.build_compress(body, batch_size, 1)
         self.instrs.extend(body_instrs)
 
+        # First round after wraparound
         body = []  # array of slots
         round_num = -1
-        for round in range(rounds-forest_height-1):
+        for round in range(1):
+            for i in range(0, batch_size, VLEN):
+                vbatch = int(i/VLEN)
+                round_num += 1
+                # mb_num = vbatch % self.mb_size
+                mb_num = round_num % self.mb_size
+
+                vtmp1 = arr_vtmp1[mb_num]
+                vtmp2 = arr_vtmp2[mb_num]
+
+                tmp_idx_v = mega_idx_v[vbatch]
+                tmp_val_v = mega_val_v[vbatch]
+
+                tmp_node_val_v = arr_tmp_node_val_v[mb_num]
+                tmp_addr_v = arr_tmp_addr_v[mb_num]
+
+                body.append(("valu", ("+", tmp_addr_v, tmp_idx_v, vforest_values_p)))
+                body.append(("load", ("load", vtmp1, tmp_addr_v)))
+                body.append(("valu", ("vbroadcast", tmp_node_val_v, vtmp1)))
+                # for j in range(VLEN):
+                    # node_val = mem[forest_values_p + idx]
+                    # body.append(("load", ("load_offset", tmp_node_val_v, tmp_addr_v, j)))
+
+                # val = myhash(val ^ node_val)
+                body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
+                body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
+                self.add("debug", ("comment", "Vhash finished"))
+                
+
+                # idx = 2*idx + (1 if val % 2 == 0 else 2)
+                # Not needed for wrap-around because it always happens in the middle iteration
+                body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
+                body.append(("valu", ("+", vtmp1, vtmp1, vone)))
+                body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
+
+        # now combine everything
+        # body_instrs = self.build_multi(body)
+        body_instrs = self.build_compress(body, batch_size, 1)
+        self.instrs.extend(body_instrs)
+
+        # Last set of rounds
+        body = []  # array of slots
+        round_num = -1
+        rounds_here = rounds - forest_height - 2
+        for round in range(rounds_here):
             for i in range(0, batch_size, VLEN):
                 vbatch = int(i/VLEN)
                 round_num += 1
@@ -410,7 +499,7 @@ class KernelBuilder:
                 
         # now combine everything
         # body_instrs = self.build_multi(body)
-        body_instrs = self.build_compress(body, batch_size, rounds - forest_height - 1)
+        body_instrs = self.build_compress(body, batch_size, rounds_here)
         self.instrs.extend(body_instrs)
 
         body = []
