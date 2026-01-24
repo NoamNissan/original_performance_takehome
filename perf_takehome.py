@@ -324,8 +324,9 @@ class KernelBuilder:
                 body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
 
                 # idx = 0 if idx >= n_nodes else idx
-                body.append(("valu", ("<", vtmp1, tmp_idx_v, vn_nodes)))
-                body.append(("flow", ("vselect", tmp_idx_v, vtmp1, tmp_idx_v, vzero)))
+                # Not needed because it always happens in the middle iteration
+                # body.append(("valu", ("<", vtmp1, tmp_idx_v, vn_nodes)))
+                # body.append(("flow", ("vselect", tmp_idx_v, vtmp1, tmp_idx_v, vzero)))
                 
         # now combine everything
         # body_instrs = self.build_multi(body)
@@ -362,15 +363,6 @@ class KernelBuilder:
  
                 # all goes to zero               
                 body.append(("valu", ("vbroadcast", tmp_idx_v, zero_const)))
-
-                # # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                # body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
-                # body.append(("valu", ("+", vtmp1, vtmp1, vone)))
-                # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
-
-                # # idx = 0 if idx >= n_nodes else idx
-                # body.append(("valu", ("<", vtmp1, tmp_idx_v, vn_nodes)))
-                # body.append(("flow", ("vselect", tmp_idx_v, vtmp1, tmp_idx_v, vzero)))
                 
         # now combine everything
         # body_instrs = self.build_multi(body)
@@ -412,8 +404,9 @@ class KernelBuilder:
                 body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
 
                 # idx = 0 if idx >= n_nodes else idx
-                body.append(("valu", ("<", vtmp1, tmp_idx_v, vn_nodes)))
-                body.append(("flow", ("vselect", tmp_idx_v, vtmp1, tmp_idx_v, vzero)))
+                # Not needed because it always happens in the middle iteration
+                # body.append(("valu", ("<", vtmp1, tmp_idx_v, vn_nodes)))
+                # body.append(("flow", ("vselect", tmp_idx_v, vtmp1, tmp_idx_v, vzero)))
                 
         # now combine everything
         # body_instrs = self.build_multi(body)
