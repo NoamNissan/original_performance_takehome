@@ -265,16 +265,29 @@ class KernelBuilder:
         vtree = self.alloc_scratch('vtree', VLEN)
         self.add("load", ("vload", vtree, self.scratch['forest_values_p']))
 
-        # f1 = self.alloc_scratch('f1')
-        # self.add("load", ("load", f1, self.scratch['forest_values_p'] + 1))
         vf1 = self.alloc_scratch('vf1', VLEN)
         self.add("valu", ("vbroadcast", vf1, vtree+1))
 
-        # f2 = self.alloc_scratch('f2')
-        # self.add("load", ("load", f2, self.scratch['forest_values_p'] + 2))
         vf2 = self.alloc_scratch('vf2', VLEN)
         self.add("valu", ("vbroadcast", vf2, vtree+2))
         self.add("valu", ("-", vf2, vf2, vf1))
+
+        vf3, vf4, vf5, vf6 = [self.alloc_scratch(f'vf{i}', VLEN) for i in range(3,7)]
+        self.add("valu", ("vbroadcast", vf3, vtree+3))
+        self.add("valu", ("vbroadcast", vf4, vtree+4))
+        self.add("valu", ("vbroadcast", vf5, vtree+5))
+        self.add("valu", ("vbroadcast", vf6, vtree+6))
+        self.add("valu", ("-", vf3, vf3, vf4))
+        self.add("valu", ("-", vf6, vf6, vf5))
+
+        const_4 = self.scratch_const(4)
+        const_5 = self.scratch_const(5)
+        vfour = self.alloc_scratch('vfour', VLEN)
+        vfive = self.alloc_scratch('vfive', VLEN)
+        self.add("valu", ("vbroadcast", vfour, const_4))
+        self.add("valu", ("vbroadcast", vfive, const_5))
+               
+
 
         for i in self.init_hash():
             self.add(*i)
@@ -305,7 +318,8 @@ class KernelBuilder:
         # tmp_node_val_v initiation method
         BROADCAST_ZERO = 0
         LOAD_ONE = 1
-        NORMAL_LOAD = 2
+        LOAD_TWO = 2
+        NORMAL_LOAD = 999
 
         # idx iteration method
         WRAPAROUND = "wraparound"
@@ -316,15 +330,17 @@ class KernelBuilder:
             # First round, load tmp_node_val_v using broadcast
             [1,                          BROADCAST_ZERO,    NORMAL_ITERATE],
             [1,                          LOAD_ONE,          NORMAL_ITERATE],
+            [1,                          LOAD_TWO,          NORMAL_ITERATE],
             # Run until wrap-around
-            [forest_height-2,            NORMAL_LOAD,       NORMAL_ITERATE],
+            [forest_height - 3,          NORMAL_LOAD,       NORMAL_ITERATE],
             # Wrap around
             [1,                          NORMAL_LOAD,       WRAPAROUND],
             # First round after wraparound
             [1,                          BROADCAST_ZERO,    NORMAL_ITERATE],
             [1,                          LOAD_ONE,          NORMAL_ITERATE],
+            [1,                          LOAD_TWO,          NORMAL_ITERATE],
             # Last set of rounds
-            [rounds - forest_height - 3, NORMAL_LOAD,       NORMAL_ITERATE],
+            [rounds - forest_height - 4, NORMAL_LOAD,       NORMAL_ITERATE],
         ]
 
         for rounds_here, load_method, iterate_method in COMPUTE_STAGES:
@@ -351,8 +367,18 @@ class KernelBuilder:
                             body.append(("valu", ("vbroadcast", tmp_node_val_v, tree_root)))
                         case x if x == LOAD_ONE:
                             body.append(("valu", ("==",          vtmp1, tmp_idx_v, vtwo)))
-                            # body.append(("flow", ("vselect", tmp_node_val_v, vtmp1, vf2, vf1)))
                             body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vf2, vf1)))
+                        case x if x == LOAD_TWO:
+                            body.append(("valu", ("<", vtmp1, tmp_idx_v, vfour)))
+                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vf3, vf4)))
+
+                            body.append(("valu", ("<", vtmp1, vfive, tmp_idx_v)))
+                            body.append(("valu", ("multiply_add", vtmp2, vtmp1, vf6, vf5)))
+
+                            body.append(("valu", ("-", tmp_node_val_v, tmp_node_val_v, vtmp2)))
+                            body.append(("valu", ("<", vtmp1, tmp_idx_v, vfive)))
+                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, tmp_node_val_v, vtmp2)))
+
                         case x if x == NORMAL_LOAD:
                             body.append(("valu", ("+", tmp_addr_v, tmp_idx_v, vforest_values_p)))
                             for j in range(VLEN):
