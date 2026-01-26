@@ -128,7 +128,7 @@ class KernelBuilder:
 
     def alloc_scratch(self, name=None, length=1):
         addr = self.scratch_ptr
-        assert name not in self.scratch
+        assert name not in self.scratch, f'name {name} already exists in scratch memory'
         if name is not None:
             self.scratch[name] = addr
             # print(f'adding {name=} to the debug scratchmap')
@@ -223,6 +223,31 @@ class KernelBuilder:
         # Any debug engine instruction is ignored by the submission simulator
         self.add("debug", ("comment", "Starting loop"))
 
+        CONSTS = 2**4-1
+        const_int = [zero_const, one_const, two_const] + [self.scratch_const(i) for i in range(3,CONSTS)]
+        vconst = [self.alloc_scratch(f'vconst{i}', VLEN) for i in range(CONSTS)]
+        for i in range(CONSTS):
+            self.add("valu", ("vbroadcast", vconst[i], const_int[i]))
+
+        const_4 = const_int[4]
+        const_5 = const_int[5]
+        const_6 = const_int[6]
+
+        vone = vconst[1]
+        vtwo = vconst[2]
+        vfour = vconst[4]
+        vfive = vconst[5]
+        vsix = vconst[6]
+        # vfour = self.alloc_scratch('vfour', VLEN)
+        # vfive = self.alloc_scratch('vfive', VLEN)
+        # vsix = self.alloc_scratch('vsix', VLEN)
+        # self.add("valu", ("vbroadcast", vfour, const_4))
+        # self.add("valu", ("vbroadcast", vfive, const_5))
+        # self.add("valu", ("vbroadcast", vsix, const_6))
+
+        # # self.add("valu", ("vbroadcast", vzero, zero_const))
+        # self.add("valu", ("vbroadcast", vone, one_const))
+        # self.add("valu", ("vbroadcast", vtwo, two_const))
 
         self.mb_size = 6
         vbatch_size = int(batch_size/VLEN)
@@ -238,6 +263,7 @@ class KernelBuilder:
         arr_vtmp1 = [self.alloc_scratch(f'vtmp1_{i}', VLEN) for i in range(vbatch_size)]
         arr_vtmp2 = [self.alloc_scratch(f'vtmp2_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp3 = [self.alloc_scratch(f'vtmp3_{i}', VLEN) for i in range(self.mb_size)]
+        arr_vtmp4 = [self.alloc_scratch(f'vtmp4_{i}', VLEN) for i in range(self.mb_size)]
 
         arr_tmp_idx_v       = [self.alloc_scratch(f'tmp_idx_v_{i}', VLEN) for i in range(self.mb_size)]
         arr_tmp_val_v       = [self.alloc_scratch(f'tmp_val_v_{i}', VLEN) for i in range(self.mb_size)]
@@ -248,52 +274,36 @@ class KernelBuilder:
         mega_idx_v = [self.alloc_scratch(f'mega_idx_v_{i}', VLEN) for i in range(vbatch_size)]
         mega_val_v = [self.alloc_scratch(f'mega_val_v_{i}', VLEN) for i in range(vbatch_size)]
 
-        # vzero = self.alloc_scratch('vzero', VLEN)
-        vone = self.alloc_scratch('vone', VLEN)
-        vtwo = self.alloc_scratch('vtwo', VLEN)
+
         # vn_nodes = self.alloc_scratch('vn_nodes', VLEN)
         vforest_values_p = self.alloc_scratch('vforest_values_p', VLEN)
 
-        # self.add("valu", ("vbroadcast", vzero, zero_const))
-        self.add("valu", ("vbroadcast", vone, one_const))
-        self.add("valu", ("vbroadcast", vtwo, two_const))
+
         # self.add("valu", ("vbroadcast", vn_nodes, self.scratch['n_nodes']))
         self.add("valu", ("vbroadcast", vforest_values_p, self.scratch['forest_values_p']))
         # The need to decrease here is because we are managing tmp_idx_v as 1-base instead of 0-base
         self.add("valu", ("-", vforest_values_p, vforest_values_p, vone))
 
-        vtree = self.alloc_scratch('vtree', VLEN)
+        vtree = self.alloc_scratch('vtree', VLEN*2)
         self.add("load", ("vload", vtree, self.scratch['forest_values_p']))
+        self.add("alu", ("+", arr_vtmp1[0], self.scratch['forest_values_p'], const_int[8]))
+        self.add("load", ("vload", vtree+8, arr_vtmp1[0]))
 
-        vf0 = self.alloc_scratch('vf0', VLEN)
-        self.add("valu", ("vbroadcast", vf0, vtree))
+        # self.add("flow", ("pause",))
+        # # Any debug engine instruction is ignored by the submission simulator
+        # self.add("debug", ("comment", "Starting loop"))
+        # return
 
-        vf1 = self.alloc_scratch('vf1', VLEN)
-        self.add("valu", ("vbroadcast", vf1, vtree+1))
 
-        vf2 = self.alloc_scratch('vf2', VLEN)
-        self.add("valu", ("vbroadcast", vf2, vtree+2))
-        self.add("valu", ("-", vf2, vf2, vf1))
+        vforest_values = [self.alloc_scratch(f'vf{i}', VLEN) for i in range(2**4-1)]
+        for i in range(2**4-1):
+            self.add("valu", ("vbroadcast", vforest_values[i], vtree+i))
 
-        vf3, vf4, vf5, vf6 = [self.alloc_scratch(f'vf{i}', VLEN) for i in range(3,7)]
-        self.add("valu", ("vbroadcast", vf3, vtree+3))
-        self.add("valu", ("vbroadcast", vf4, vtree+4))
-        self.add("valu", ("vbroadcast", vf5, vtree+5))
-        self.add("valu", ("vbroadcast", vf6, vtree+6))
-        self.add("valu", ("-", vf4, vf4, vf3))
-        self.add("valu", ("-", vf6, vf6, vf5))
+        vf = vforest_values
 
-        const_4 = self.scratch_const(4)
-        const_5 = self.scratch_const(5)
-        const_6 = self.scratch_const(6)
-        vfour = self.alloc_scratch('vfour', VLEN)
-        vfive = self.alloc_scratch('vfive', VLEN)
-        vsix = self.alloc_scratch('vsix', VLEN)
-        self.add("valu", ("vbroadcast", vfour, const_4))
-        self.add("valu", ("vbroadcast", vfive, const_5))
-        self.add("valu", ("vbroadcast", vsix, const_6))
-               
 
+        for i in range(2,2**4-1, 2):
+            self.add("valu", ("-", vforest_values[i], vforest_values[i], vforest_values[i-1]))
 
         for i in self.init_hash():
             self.add(*i)
@@ -327,7 +337,8 @@ class KernelBuilder:
         BROADCAST_ZERO = 0
         LOAD_ONE = 1
         LOAD_TWO = 2
-        AFTER_WRAPAROUND = 3
+        LOAD_THREE = 3
+        AFTER_WRAPAROUND = 777
         NORMAL_LOAD = 999
 
         # idx iteration method
@@ -340,16 +351,18 @@ class KernelBuilder:
             [1,                          BROADCAST_ZERO,          NORMAL_ITERATE],    # BROADCAST_ZERO
             [1,                          LOAD_ONE,          NORMAL_ITERATE], # LOAD_ONE
             [1,                          LOAD_TWO,          NORMAL_ITERATE], # LOAD_TWO
+            [1,                          LOAD_THREE,          NORMAL_ITERATE], 
             # Run until wrap-around
-            [forest_height - 3,          NORMAL_LOAD,          NORMAL_ITERATE],
+            [forest_height - 4,          NORMAL_LOAD,          NORMAL_ITERATE],
             # Wrap around
             [1,                          NORMAL_LOAD,          WRAPAROUND],
             # First round after wraparound
             [1,                          BROADCAST_ZERO,          NORMAL_ITERATE],    # BROADCAST_ZERO
             [1,                          LOAD_ONE,          NORMAL_ITERATE], # LOAD_ONE
             [1,                          LOAD_TWO,          NORMAL_ITERATE], # LOAD_TWO
+            [1,                          LOAD_THREE,          NORMAL_ITERATE],
             # Last set of rounds
-            [rounds - forest_height - 4, NORMAL_LOAD,       NORMAL_ITERATE],
+            [rounds - forest_height - 5, NORMAL_LOAD,       NORMAL_ITERATE],
         ]
 
         for rounds_here, load_method, iterate_method in COMPUTE_STAGES:
@@ -365,6 +378,7 @@ class KernelBuilder:
                     vtmp1 = arr_vtmp1[vbatch]
                     vtmp2 = arr_vtmp2[mb_num]
                     vtmp3 = arr_vtmp3[mb_num]
+                    vtmp4 = arr_vtmp4[mb_num]
 
                     tmp_idx_v = mega_idx_v[vbatch]
                     tmp_val_v = mega_val_v[vbatch]
@@ -378,34 +392,59 @@ class KernelBuilder:
                             pass
                         case x if x == LOAD_ONE:
                             # vtmp1 has the value we need from the previous iteration
-                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vf2, vf1)))
+                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vf[2], vf[1])))
                         case x if x == LOAD_TWO:
 
                             # vtmp1 has the value we need from the previous iteration
                             body.append(("valu", MultiSlot(slots=(
-                                    ("multiply_add", tmp_node_val_v, vtmp1, vf4, vf3),
-                                    ("multiply_add", vtmp3,          vtmp1, vf6, vf5)
+                                    ("multiply_add", tmp_node_val_v, vtmp1, vf[4], vf[3]),
+                                    ("multiply_add", vtmp3,          vtmp1, vf[6], vf[5])
+                                ))))
+
+                            body.append(("valu", ("-", vtmp3, vtmp3, tmp_node_val_v)))
+
+                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
+                            body.append(("valu", (">>",vtmp1, vtmp1, vconst[1])))
+
+
+                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vtmp3, tmp_node_val_v)))
+                        case x if x == LOAD_THREE:
+                            body.append(("valu", MultiSlot(slots=(
+                                    ("multiply_add", tmp_node_val_v, vtmp1, vf[8], vf[7]),
+                                    ("multiply_add", vtmp2,          vtmp1, vf[10], vf[9]),
+                                    ("multiply_add", vtmp3,          vtmp1, vf[12], vf[11]),
+                                    ("multiply_add", vtmp4,          vtmp1, vf[14], vf[13])
                                 ))))
 
                             body.append(("valu", MultiSlot(slots=(
-                                    ("-", tmp_node_val_v, tmp_node_val_v, vtmp3),
-                                    ("<", vtmp2, tmp_idx_v, vsix)
+                                    ("-", vtmp2, vtmp2, tmp_node_val_v),
+                                    ("-", vtmp4, vtmp4, vtmp3)
                                 ))))
 
-                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp2, tmp_node_val_v, vtmp3)))
+                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
+                            body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
 
+                            body.append(("valu", MultiSlot(slots=(
+                                    ("multiply_add", vtmp2, vtmp1, vtmp2, tmp_node_val_v),
+                                    ("multiply_add", vtmp4, vtmp1, vtmp4, vtmp3)
+                                ))))
+
+                            body.append(("valu", ("-", vtmp4, vtmp4, vtmp2)))
+
+                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
+                            body.append(("valu", (">>",vtmp1, vtmp1, vconst[2])))
+
+                            body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, vtmp4, vtmp2)))
                         case x if x == NORMAL_LOAD:
                             body.append(("valu", ("+", tmp_addr_v, tmp_idx_v, vforest_values_p)))
-                            # body.append(("valu", ("-", tmp_addr_v, tmp_addr_v, vone)))
                             for j in range(VLEN):
                                 # node_val = mem[forest_values_p + idx]
-                                # body.append(("load", ("load", tmp_node_val_v+j, tmp_addr_v+j)))
                                 body.append(("load", ("load_offset", tmp_node_val_v, tmp_addr_v, j)))
 
 
                     # val = myhash(val ^ node_val)
                     if load_method == BROADCAST_ZERO:
-                        body.append(("valu", ("^", tmp_val_v, tmp_val_v, vf0)))
+                        body.append(("valu", ("^", tmp_val_v, tmp_val_v, vf[0])))
                     else:
                         body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
                     body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
@@ -417,7 +456,6 @@ class KernelBuilder:
                             # Not needed for wrap-around because it always happens in the middle iteration
                             body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
                             body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
-                            # body.append(("valu", ("+", tmp_idx_v, tmp_idx_v, vone)))
                         case x if x == WRAPAROUND:
                             # all goes to one               
                             # body.append(("valu", ("vbroadcast", tmp_idx_v, zero_const)))
@@ -496,6 +534,7 @@ def do_kernel_test(
     kb = KernelBuilder()
     kb.build_kernel(forest.height, len(forest.values), len(inp.indices), rounds)
     # print(kb.instrs)
+    print(forest.values[:16])
 
     value_trace = {}
     machine = Machine(
