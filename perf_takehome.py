@@ -134,7 +134,7 @@ class KernelBuilder:
             # print(f'adding {name=} to the debug scratchmap')
             self.scratch_debug[addr] = (name, length)
         self.scratch_ptr += length
-        assert self.scratch_ptr <= SCRATCH_SIZE, "Out of scratch space"
+        assert self.scratch_ptr <= SCRATCH_SIZE, f'Out of scratch space when trying to allocate {name}'
         return addr
 
     def scratch_const(self, val, name=None):
@@ -256,8 +256,8 @@ class KernelBuilder:
         # tmp_idx = self.alloc_scratch("tmp_idx")
         # tmp_val = self.alloc_scratch("tmp_val")
         # tmp_node_val = self.alloc_scratch("tmp_node_val")
-        arr_tmp_addr_idx = [self.alloc_scratch(f'tmp_addr_idx_{i}') for i in range(self.mb_size)]
-        arr_tmp_addr_val = [self.alloc_scratch(f'tmp_addr_val_{i}') for i in range(self.mb_size)]
+        # arr_tmp_addr_idx = [self.alloc_scratch(f'tmp_addr_idx_{i}') for i in range(self.mb_size)]
+        # arr_tmp_addr_val = [self.alloc_scratch(f'tmp_addr_val_{i}') for i in range(self.mb_size)]
 
         # Vector scratch registers
         arr_vtmp1 = [self.alloc_scratch(f'vtmp1_{i}', VLEN) for i in range(vbatch_size)]
@@ -265,10 +265,10 @@ class KernelBuilder:
         arr_vtmp3 = [self.alloc_scratch(f'vtmp3_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp4 = [self.alloc_scratch(f'vtmp4_{i}', VLEN) for i in range(self.mb_size)]
 
-        arr_tmp_idx_v       = [self.alloc_scratch(f'tmp_idx_v_{i}', VLEN) for i in range(self.mb_size)]
-        arr_tmp_val_v       = [self.alloc_scratch(f'tmp_val_v_{i}', VLEN) for i in range(self.mb_size)]
+        # arr_tmp_idx_v       = [self.alloc_scratch(f'tmp_idx_v_{i}', VLEN) for i in range(self.mb_size)]
+        # arr_tmp_val_v       = [self.alloc_scratch(f'tmp_val_v_{i}', VLEN) for i in range(self.mb_size)]
         arr_tmp_node_val_v  = [self.alloc_scratch(f'tmp_node_val_v_{i}', VLEN) for i in range(self.mb_size)]
-        arr_tmp_addr_v      = [self.alloc_scratch(f'tmp_addr_v_{i}', VLEN) for i in range(self.mb_size)]
+        # arr_tmp_addr_v      = [self.alloc_scratch(f'tmp_addr_v_{i}', VLEN) for i in range(self.mb_size)]
 
         
         mega_idx_v = [self.alloc_scratch(f'mega_idx_v_{i}', VLEN) for i in range(vbatch_size)]
@@ -315,8 +315,7 @@ class KernelBuilder:
             vbatch = int(i/VLEN)
             mb_num = vbatch % self.mb_size
 
-            tmp_addr_idx = arr_tmp_addr_idx[mb_num]
-            tmp_addr_val = arr_tmp_addr_val[mb_num]
+            vtmp2 = arr_vtmp2[mb_num]
 
             tmp_idx_v = mega_idx_v[vbatch]
             tmp_val_v = mega_val_v[vbatch]
@@ -325,8 +324,8 @@ class KernelBuilder:
             # idx = mem[inp_indices_p + i]
             # val = mem[inp_values_p + i]
             # No need to initialize tmp_idx_v because it is zeros in the first place
-            body.append(("alu", ("+", tmp_addr_val, self.scratch["inp_values_p"], i_const)))
-            body.append(("load",("vload", tmp_val_v, tmp_addr_val)))
+            body.append(("alu", ("+", vtmp2, self.scratch["inp_values_p"], i_const)))
+            body.append(("load",("vload", tmp_val_v, vtmp2)))
             # Initializing to one for easier usage
             body.append(("valu", ("+", tmp_idx_v, tmp_idx_v, vone)))
         
@@ -384,7 +383,6 @@ class KernelBuilder:
                     tmp_val_v = mega_val_v[vbatch]
 
                     tmp_node_val_v = arr_tmp_node_val_v[mb_num]
-                    tmp_addr_v = arr_tmp_addr_v[mb_num]
 
                     match load_method:
                         case x if x == BROADCAST_ZERO:
@@ -401,45 +399,61 @@ class KernelBuilder:
                                     ("multiply_add", vtmp3,          vtmp1, vf[6], vf[5])
                                 ))))
 
-                            body.append(("valu", ("-", vtmp3, vtmp3, tmp_node_val_v)))
+                            body.append(("valu", MultiSlot(slots=(
+                                   ("-", vtmp3, vtmp3, tmp_node_val_v),
+                                   ("&", vtmp1, tmp_idx_v, vconst[2])
+                                ))))
 
-                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
                             body.append(("valu", (">>",vtmp1, vtmp1, vconst[1])))
-
-
                             body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vtmp3, tmp_node_val_v)))
+
                         case x if x == LOAD_THREE:
                             body.append(("valu", MultiSlot(slots=(
                                     ("multiply_add", tmp_node_val_v, vtmp1, vf[8], vf[7]),
                                     ("multiply_add", vtmp2,          vtmp1, vf[10], vf[9]),
                                     ("multiply_add", vtmp3,          vtmp1, vf[12], vf[11]),
-                                    ("multiply_add", vtmp4,          vtmp1, vf[14], vf[13])
+                                    ("multiply_add", vtmp4,          vtmp1, vf[14], vf[13]),
+                                    ("&", vtmp1, tmp_idx_v, vconst[2])
                                 ))))
 
                             body.append(("valu", MultiSlot(slots=(
                                     ("-", vtmp2, vtmp2, tmp_node_val_v),
-                                    ("-", vtmp4, vtmp4, vtmp3)
+                                    ("-", vtmp4, vtmp4, vtmp3),
+                                    (">>",vtmp1, vtmp1,     vconst[1])
                                 ))))
 
-                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
-                            body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
+                            # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
+                            # body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
 
                             body.append(("valu", MultiSlot(slots=(
                                     ("multiply_add", vtmp2, vtmp1, vtmp2, tmp_node_val_v),
-                                    ("multiply_add", vtmp4, vtmp1, vtmp4, vtmp3)
+                                    ("multiply_add", vtmp4, vtmp1, vtmp4, vtmp3),
+                                    ("&", vtmp1, tmp_idx_v, vconst[4])
                                 ))))
 
-                            body.append(("valu", ("-", vtmp4, vtmp4, vtmp2)))
+                            body.append(("valu", MultiSlot(slots=(
+                                    ("-", vtmp4, vtmp4, vtmp2),
+                                    (">>",vtmp1, vtmp1, vconst[2])
+                                ))))
 
-                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
-                            body.append(("valu", (">>",vtmp1, vtmp1, vconst[2])))
+                            # body.append(("valu", ("-", vtmp4, vtmp4, vtmp2)))
+                            # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
+                            # body.append(("valu", (">>",vtmp1, vtmp1, vconst[2])))
 
                             body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, vtmp4, vtmp2)))
+
+                            """
+                                x = idx==4
+                                val = ma x*vf3 + val
+                                x = idx==5
+                                val = ma x*vf4 + val
+
+                            """
                         case x if x == NORMAL_LOAD:
-                            body.append(("valu", ("+", tmp_addr_v, tmp_idx_v, vforest_values_p)))
+                            body.append(("valu", ("+", vtmp2, tmp_idx_v, vforest_values_p)))
                             for j in range(VLEN):
                                 # node_val = mem[forest_values_p + idx]
-                                body.append(("load", ("load_offset", tmp_node_val_v, tmp_addr_v, j)))
+                                body.append(("load", ("load_offset", tmp_node_val_v, vtmp2, j)))
 
 
                     # val = myhash(val ^ node_val)
@@ -472,8 +486,8 @@ class KernelBuilder:
             vbatch = int(i/VLEN)
             mb_num = vbatch % self.mb_size
 
-            tmp_addr_idx = arr_tmp_addr_idx[mb_num]
-            tmp_addr_val = arr_tmp_addr_val[mb_num]
+            vtmp1 = arr_vtmp1[mb_num]
+            vtmp2 = arr_vtmp2[mb_num]
 
             tmp_idx_v = mega_idx_v[vbatch]
             tmp_val_v = mega_val_v[vbatch]
@@ -485,10 +499,10 @@ class KernelBuilder:
             # mem[inp_indices_p + i] = idx
             # mem[inp_values_p + i] = val
 
-            body.append(("alu", MultiSlot(slots=(("+", tmp_addr_idx, self.scratch["inp_indices_p"], i_const),
-                                            ("+", tmp_addr_val, self.scratch["inp_values_p"], i_const)))))
-            body.append(("store", MultiSlot(slots=(("vstore", tmp_addr_idx, tmp_idx_v), 
-                                            ("vstore", tmp_addr_val, tmp_val_v)))))
+            body.append(("alu", MultiSlot(slots=(("+", vtmp1, self.scratch["inp_indices_p"], i_const),
+                                            ("+", vtmp2, self.scratch["inp_values_p"], i_const)))))
+            body.append(("store", MultiSlot(slots=(("vstore", vtmp1, tmp_idx_v), 
+                                            ("vstore", vtmp2, tmp_val_v)))))
 
         body_instrs = self.build_compress(body, batch_size, 1)
         self.instrs.extend(body_instrs)
@@ -534,7 +548,6 @@ def do_kernel_test(
     kb = KernelBuilder()
     kb.build_kernel(forest.height, len(forest.values), len(inp.indices), rounds)
     # print(kb.instrs)
-    print(forest.values[:16])
 
     value_trace = {}
     machine = Machine(
