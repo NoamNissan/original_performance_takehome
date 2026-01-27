@@ -87,15 +87,38 @@ def areas_adjacent(a1, l1, a2, l2):
 def addresses(slot):
     return slot[1:] if slot[0] != 'load_offset' else slot[1:-1]
 
+class Scratch():
+    scratch: Lust[tuple]
+    def __init__(self):
+        self.scratch = [(0,0)]
+
+    def area_overlap(self, a1, l1) -> bool:
+        for a2, l2 in self.scratch:
+            o, _ = areas_overlap(a1, l1, a2, l2)
+            if o:
+                return True
+        return False
+
+    def insert(self, a1, l1):
+        for a2, l2 in self.scratch:
+            if areas_adjacent(a1, l1, a2, l2):
+                found = True
+                self.scratch.remove((a2, l2))
+                self.scratch.append((min(a1, a2),max(a2+l2,a1+l1)-min(a1, a2)))
+                return
+        self.scratch.append((a1, l1))
+
 class OptimizedInstruction():
     e: str
     slots: tuple
-    written_scratch: List[tuple]
+    written_scratch: Scratch
+    read_scratch: Scratch
 
     def __init__(self, e):
         self.e = e
         self.slots = []
-        self.written_scratch = [(0,0)]
+        self.written_scratch = Scratch()
+        self.read_scratch = Scratch()
 
     def inst_length(self, e):
         lengths = {
@@ -109,21 +132,21 @@ class OptimizedInstruction():
     def slot_overlaps(self, e, slot):
         offset = 0 if slot[0] != 'load_offset' else slot[3]
         length = self.inst_length(e)
-        taddr = slot[1] + offset
+        waddr = slot[1] + offset
 
         overlap = False
-        # assert len(self.written_scratch) < 20, f'written_scratch is large'
-        for a, l in self.written_scratch:
-            o, _ = areas_overlap(a, l, taddr, length)
-            if o:
+        if self.written_scratch.area_overlap(waddr, length):
+            overlap = True
+
+        if self.read_scratch.area_overlap(waddr, length):
+            overlap = True
+
+        read_addrs = slot[2:] if slot[0] != 'load_offset' else slot[2:-1]
+        for raddr in read_addrs:
+            raddr += offset
+            if self.written_scratch.area_overlap(raddr, length):
                 overlap = True
-        saddrs = slot[2:] if slot[0] != 'load_offset' else slot[2:-1]
-        for saddr in saddrs:
-            saddr += offset
-            for a,l in self.written_scratch:
-                o, _ =  areas_overlap(a, l, saddr, length)
-                if o:
-                    overlap = True
+
         return overlap
 
     def permitted(self, e, slot) -> bool:
@@ -142,15 +165,13 @@ class OptimizedInstruction():
         offset = 0 if slot[0] != 'load_offset' else slot[3]
         length = self.inst_length(self.e)
         taddr = slot[1] + offset
-        found = False
-        for saddr, slength in self.written_scratch:
-            if areas_adjacent(taddr, length, saddr, slength):
-                found = True
-                self.written_scratch.remove((saddr, slength))
-                self.written_scratch.append((min(saddr, taddr),max(taddr+length,saddr+slength)-min(saddr, taddr)))
-                break
-        if not found:
-            self.written_scratch.append((taddr, length))
+
+        self.written_scratch.insert(taddr, length)
+        read_addrs = slot[2:] if slot[0] != 'load_offset' else slot[2:-1]
+        for raddr in read_addrs:
+            raddr += offset
+            self.read_scratch.insert(raddr, length)
+      
 
     def add_and_register(self, e, slot) -> bool:
         assert self.permitted(e, slot), f'Trying to add an unpermitted instruction'
@@ -160,7 +181,7 @@ class OptimizedInstruction():
      
 
     def register(self, slot):
-        if len(self.slots) < SLOT_LIMITS[self.e]:
+        if len(self.slots) <= SLOT_LIMITS[self.e]:
             self.insert_area(slot)
 
     def full(self) -> bool:
@@ -200,10 +221,12 @@ class Compiler:
         optimized = []
         last_seen = {}
         for s in stock:
-            if self.debug:
-                print(f'optimizing {s}')
+            # if self.debug:
+            #     print(f'optimizing {s}')
             e = s[0]
             for slot in s[1]:
+                if self.debug:
+                    print(f'optimizing {slot}')
                 found = False
                 # iterate optimized, and find a non-coliding spot
                 seen = [0]
@@ -217,16 +240,16 @@ class Compiler:
                         opz.add_and_register(e, slot)
                         found = True
                         break
-                    # if e == 'load' and opz.e in ['valu', 'alu']:
-                    #     if not opz.slot_overlaps(e, slot):
-                    #         nopz = OptimizedInstruction(e)
-                    #         nopz.add_and_register(e, slot)
-                    #         optimized = optimized[:i] + [nopz] + optimized[i:]
-                    #         found = True
-                    #         for addr in last_seen:
-                    #             if last_seen[addr] > i:
-                    #                 last_seen[addr] = last_seen[addr]+1
-                    #         break
+                    if e == 'load' and opz.e in ['valu', 'alu']:
+                        if not opz.slot_overlaps(e, slot):
+                            nopz = OptimizedInstruction(e)
+                            nopz.add_and_register(e, slot)
+                            optimized = optimized[:i] + [nopz] + optimized[i:]
+                            found = True
+                            for addr in last_seen:
+                                if last_seen[addr] >= i:
+                                    last_seen[addr] = last_seen[addr]+1
+                            break
 
                     opz.register(slot)
                     
@@ -236,12 +259,10 @@ class Compiler:
                     opz.add_and_register(e, slot)
                     optimized.append(opz)
                 # update last_seen
-                for addr in addresses(slot):
-                    last_seen[addr] = i
-
-            # if optimized[0].full():
-            #     self.output.append(optimized[0].build())
-            #     optimized = optimized[0:]   
+                addr = slot[1]
+                last_seen[addr] = i
+                # for addr in addresses(slot):
+                #     last_seen[addr] = i
 
         self.output.extend([opz.build() for opz in optimized])
 
@@ -588,9 +609,9 @@ class KernelBuilder:
             [1,                          LOAD_ONE,          NORMAL_ITERATE], # LOAD_ONE
             [1,                          LOAD_TWO,          NORMAL_ITERATE], # LOAD_TWO
             [1,                          LOAD_THREE,          NORMAL_ITERATE], 
-            [1,                          LOAD_FOUR,          NORMAL_ITERATE], 
+            # [1,                          LOAD_FOUR,          NORMAL_ITERATE], 
             # Run until wrap-around
-            [forest_height - 5,          NORMAL_LOAD,          NORMAL_ITERATE],
+            [forest_height - 4,          NORMAL_LOAD,          NORMAL_ITERATE],
             # Wrap around
             [1,                          NORMAL_LOAD,          WRAPAROUND],
             # First round after wraparound
@@ -598,9 +619,9 @@ class KernelBuilder:
             [1,                          LOAD_ONE,          NORMAL_ITERATE], # LOAD_ONE
             [1,                          LOAD_TWO,          NORMAL_ITERATE], # LOAD_TWO
             [1,                          LOAD_THREE,          NORMAL_ITERATE],
-            [1,                          LOAD_FOUR,          NORMAL_ITERATE], 
+            # [1,                          LOAD_FOUR,          NORMAL_ITERATE], 
             # Last set of rounds
-            # [rounds - forest_height - 5, NORMAL_LOAD,       NORMAL_ITERATE],
+            [rounds - forest_height - 5, NORMAL_LOAD,       NORMAL_ITERATE],
         ]
 
         # for a,l in self.scratch_debug.values():
@@ -762,12 +783,14 @@ class KernelBuilder:
 
             # now combine everything
             # body_instrs = self.build_multi(body)
-            if stage == 6 or True:
-                body_instrs = self.compile(body, True)
-                print(f'before: {len(body)}')
-                print(f'after:  {len(body_instrs)}')
+            if stage or True:
+                body_instrs = self.compile(body, False)
+                print(f'===== before: {len(body)} after:  {len(body_instrs)}')
+                # print(f'')
             else:
                 body_instrs = self.build_compress(body, batch_size, rounds_here)
+                print(f'+++++ before: {len(body)} after:  {len(body_instrs)}')
+
             self.instrs.extend(body_instrs)  
 
         body = []
