@@ -38,6 +38,232 @@ from problem import (
 class MultiSlot:
     slots: List[tuple]
 
+class Buffer:
+    e: str
+    slots: List[tuple]
+
+    def __init__(self):
+        self.e = None
+        self.slots = []
+
+    def push(self, inst) -> bool:
+        # print(f'pushing {inst}')
+        if self.e == None:
+            self.e = inst[0]
+            self.slots = [s for s in inst[1]]
+            return True
+        if inst[0] == self.e:
+            self.slots.extend(inst[1])
+            return True
+        return False
+
+    def top(self):
+        return self.slots[0]
+
+    def pop(self):
+        if len(self.slots) == 0:
+            return None
+        s = self.slots[0]
+        self.slots = self.slots[1:]
+        if len(self.slots) == 0:
+            e = None
+        return s
+
+    def empty(self) -> bool:
+        return len(self.slots) == 0
+
+def areas_overlap(a1, l1, a2, l2):
+    overlap, adjacent = True, False
+    if a1+l1 <= a2:
+        overlap = False
+    if a2+l2 <= a1:
+        overlap = False
+    adjacent = a1+l1 == a2 or a2+l2 == a1
+    return overlap, adjacent
+
+def areas_adjacent(a1, l1, a2, l2):
+    return a1+l1 == a2 or a2+l2 == a1
+
+def addresses(slot):
+    return slot[1:] if slot[0] != 'load_offset' else slot[1:-1]
+
+class OptimizedInstruction():
+    e: str
+    slots: tuple
+    written_scratch: List[tuple]
+
+    def __init__(self, e):
+        self.e = e
+        self.slots = []
+        self.written_scratch = [(0,0)]
+
+    def inst_length(self, e):
+        lengths = {
+            'alu' : 1,
+            'valu' : 8,
+            'load' : 1,
+            'vload' : 8
+            }
+        return lengths[e]
+
+    def slot_overlaps(self, e, slot):
+        offset = 0 if slot[0] != 'load_offset' else slot[3]
+        length = self.inst_length(e)
+        taddr = slot[1] + offset
+
+        overlap = False
+        # assert len(self.written_scratch) < 20, f'written_scratch is large'
+        for a, l in self.written_scratch:
+            o, _ = areas_overlap(a, l, taddr, length)
+            if o:
+                overlap = True
+        saddrs = slot[2:] if slot[0] != 'load_offset' else slot[2:-1]
+        for saddr in saddrs:
+            saddr += offset
+            for a,l in self.written_scratch:
+                o, _ =  areas_overlap(a, l, saddr, length)
+                if o:
+                    overlap = True
+        return overlap
+
+    def permitted(self, e, slot) -> bool:
+        permitted = True
+        if self.full():
+        # if len(self.slots) == 2:
+            permitted = False
+
+        if self.e != e:
+            permitted = False
+        if self.slot_overlaps(e, slot):
+            permitted = False
+        return permitted
+
+    def insert_area(self, slot):
+        offset = 0 if slot[0] != 'load_offset' else slot[3]
+        length = self.inst_length(self.e)
+        taddr = slot[1] + offset
+        found = False
+        for saddr, slength in self.written_scratch:
+            if areas_adjacent(taddr, length, saddr, slength):
+                found = True
+                self.written_scratch.remove((saddr, slength))
+                self.written_scratch.append((min(saddr, taddr),max(taddr+length,saddr+slength)-min(saddr, taddr)))
+                break
+        if not found:
+            self.written_scratch.append((taddr, length))
+
+    def add_and_register(self, e, slot) -> bool:
+        assert self.permitted(e, slot), f'Trying to add an unpermitted instruction'
+        self.slots.append(slot)
+        self.register(slot)
+
+     
+
+    def register(self, slot):
+        if len(self.slots) < SLOT_LIMITS[self.e]:
+            self.insert_area(slot)
+
+    def full(self) -> bool:
+        return len(self.slots) == SLOT_LIMITS[self.e]
+
+    def build(self):
+        return {self.e: self.slots}
+
+    
+
+
+class Compiler:
+    def __init__(self, insts, debug = False):
+        self.input = insts
+        self.curr = {}
+        self.curr['valu'] = []
+        self.curr['load'] = []
+        self.curr['alu'] = []
+        self.output = []
+        self.debug = debug
+
+    def flush(self, force: bool):
+        for e, v in self.curr:
+            assert len(v) <= SLOT_LIMITS[e], f'too much slots in curr[{e}]'
+            if len(v) == SLOT_LIMITS[e] or force:
+                self.output.append({e: self.curr[e]})
+
+    
+
+    def compile(self):
+        stock = [self.decompose(i) for i in self.input]
+        buffer = []
+        if self.debug:
+            print('\n'.join([f'{i}' for i in stock]))
+        # stock.reverse()
+
+        optimized = []
+        last_seen = {}
+        for s in stock:
+            if self.debug:
+                print(f'optimizing {s}')
+            e = s[0]
+            for slot in s[1]:
+                found = False
+                # iterate optimized, and find a non-coliding spot
+                seen = [0]
+                for a in addresses(slot):
+                    if a in last_seen:
+                        seen.append(last_seen[a])
+                i = max(seen)
+                while i < len(optimized) and not found:
+                    opz = optimized[i]
+                    if opz.permitted(e, slot):
+                        opz.add_and_register(e, slot)
+                        found = True
+                        break
+                    # if e == 'load' and opz.e in ['valu', 'alu']:
+                    #     if not opz.slot_overlaps(e, slot):
+                    #         nopz = OptimizedInstruction(e)
+                    #         nopz.add_and_register(e, slot)
+                    #         optimized = optimized[:i] + [nopz] + optimized[i:]
+                    #         found = True
+                    #         for addr in last_seen:
+                    #             if last_seen[addr] > i:
+                    #                 last_seen[addr] = last_seen[addr]+1
+                    #         break
+
+                    opz.register(slot)
+                    
+                    i += 1
+                if not found:
+                    opz = OptimizedInstruction(e)
+                    opz.add_and_register(e, slot)
+                    optimized.append(opz)
+                # update last_seen
+                for addr in addresses(slot):
+                    last_seen[addr] = i
+
+            # if optimized[0].full():
+            #     self.output.append(optimized[0].build())
+            #     optimized = optimized[0:]   
+
+        self.output.extend([opz.build() for opz in optimized])
+
+        if self.debug:
+            print('done compiling')
+            print('\n'.join([f'{i}' for i in self.output]))
+
+
+                
+    def decompose(self, inst) -> (Engine, List[tuple]):
+        e, slot = inst
+        slots = []
+        if isinstance(slot, MultiSlot):
+            slots.extend(slot.slots)
+        elif isinstance(slot, tuple):
+            slots.append(slot)
+        return e, slots
+
+    def build(self) -> list[dict[Engine, tuple]]:
+        # self.flush(True)
+        # return self.output
+        return self.output
 
 class KernelBuilder:
     def __init__(self):
@@ -67,6 +293,8 @@ class KernelBuilder:
             else:
                 raise Exception(f"Unrecognised type {type(slot)}")
         return instrs
+
+    
 
     def combine_insts(self, insts: list[dict[Engine, tuple]]):
         engines = [k for k,_ in insts]
@@ -99,7 +327,7 @@ class KernelBuilder:
         round_length = int(iter_length / rounds)
 
         batches = int(len(body)/round_length)
-        print(f'{len(body)=} {round_length=} {batches=}')
+        # print(f'{len(body)=} {round_length=} {batches=}')
 
         # combine every mb_size iterations
         # mb_size = self.mb_size
@@ -121,6 +349,25 @@ class KernelBuilder:
             batches -= mb_size
             # print(f'{len(insts)=}')
         return insts
+
+    def compile(self, insts, debug = False):
+        compiler = Compiler(insts, debug = debug)
+        compiler.compile()
+        return compiler.build()
+            
+
+    def build_optimize(self, body: list, batch_size: int, rounds: int):
+        effected = []
+        read = []
+
+        assert all([e in ['valu', 'load', 'alu'] for e in body]), f'body has an instruction not in [valu, load, alu]'
+        curr_valu = []
+        curr_load = []
+
+        for inst in body:
+            e, slots = self.get_slots(inst)
+
+
 
 
     def add(self, engine, slot):
@@ -247,6 +494,7 @@ class KernelBuilder:
         arr_vtmp2 = [self.alloc_scratch(f'vtmp2_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp3 = [self.alloc_scratch(f'vtmp3_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp4 = [self.alloc_scratch(f'vtmp4_{i}', VLEN) for i in range(self.mb_size)]
+        arr_vtmp5 = [self.alloc_scratch(f'vtmp5_{i}', VLEN) for i in range(self.mb_size)]
 
         # arr_tmp_idx_v       = [self.alloc_scratch(f'tmp_idx_v_{i}', VLEN) for i in range(self.mb_size)]
         # arr_tmp_val_v       = [self.alloc_scratch(f'tmp_val_v_{i}', VLEN) for i in range(self.mb_size)]
@@ -267,22 +515,29 @@ class KernelBuilder:
         # The need to decrease here is because we are managing tmp_idx_v as 1-base instead of 0-base
         self.add("valu", ("-", vforest_values_p, vforest_values_p, vone))
 
-        vtree = self.alloc_scratch('vtree', VLEN*2)
-        self.add("load", ("vload", vtree, self.scratch['forest_values_p']))
-        self.add("alu", ("+", arr_vtmp1[0], self.scratch['forest_values_p'], const_int[8]))
-        self.add("load", ("vload", vtree+8, arr_vtmp1[0]))
+        vtree = self.alloc_scratch('vtree', VLEN*4)
+        ptr = arr_vtmp1[0]
+        self.add("alu", ("+", ptr, self.scratch['forest_values_p'], const_int[0]))
+        for i in range(4):
+            self.add("load", ("vload", vtree+i*VLEN, ptr))
+            if i != 3:
+                self.add("alu", ("+", ptr, ptr, const_int[8]))
+
+        # self.add("load", ("vload", vtree, self.scratch['forest_values_p']))
+        # self.add("alu", ("+", arr_vtmp1[0], self.scratch['forest_values_p'], const_int[8]))
+        # self.add("load", ("vload", vtree+8, arr_vtmp1[0]))
 
 
+        NUM_STORED_VF = 2**5-1
 
-
-        vforest_values = [self.alloc_scratch(f'vf{i}', VLEN) for i in range(2**4-1)]
-        for i in range(2**4-1):
+        vforest_values = [self.alloc_scratch(f'vf{i}', VLEN) for i in range(NUM_STORED_VF)]
+        for i in range(NUM_STORED_VF):
             self.add("valu", ("vbroadcast", vforest_values[i], vtree+i))
 
         vf = vforest_values
 
 
-        for i in range(2,2**4-1, 2):
+        for i in range(2, NUM_STORED_VF, 2):
             self.add("valu", ("-", vforest_values[i], vforest_values[i], vforest_values[i-1]))
 
         for i in self.init_hash():
@@ -310,6 +565,7 @@ class KernelBuilder:
             body.append(("valu", ("+", tmp_idx_v, tmp_idx_v, vone)))
         
         body_instrs = self.build_compress(body, batch_size, 1)
+        # body_instrs = self.compile(body)
         self.instrs.extend(body_instrs)
 
         # tmp_node_val_v initiation method
@@ -317,6 +573,7 @@ class KernelBuilder:
         LOAD_ONE = 1
         LOAD_TWO = 2
         LOAD_THREE = 3
+        LOAD_FOUR = 4
         AFTER_WRAPAROUND = 777
         NORMAL_LOAD = 999
 
@@ -331,8 +588,9 @@ class KernelBuilder:
             [1,                          LOAD_ONE,          NORMAL_ITERATE], # LOAD_ONE
             [1,                          LOAD_TWO,          NORMAL_ITERATE], # LOAD_TWO
             [1,                          LOAD_THREE,          NORMAL_ITERATE], 
+            [1,                          LOAD_FOUR,          NORMAL_ITERATE], 
             # Run until wrap-around
-            [forest_height - 4,          NORMAL_LOAD,          NORMAL_ITERATE],
+            [forest_height - 5,          NORMAL_LOAD,          NORMAL_ITERATE],
             # Wrap around
             [1,                          NORMAL_LOAD,          WRAPAROUND],
             # First round after wraparound
@@ -340,16 +598,18 @@ class KernelBuilder:
             [1,                          LOAD_ONE,          NORMAL_ITERATE], # LOAD_ONE
             [1,                          LOAD_TWO,          NORMAL_ITERATE], # LOAD_TWO
             [1,                          LOAD_THREE,          NORMAL_ITERATE],
+            [1,                          LOAD_FOUR,          NORMAL_ITERATE], 
             # Last set of rounds
-            [rounds - forest_height - 5, NORMAL_LOAD,       NORMAL_ITERATE],
+            # [rounds - forest_height - 5, NORMAL_LOAD,       NORMAL_ITERATE],
         ]
 
         # for a,l in self.scratch_debug.values():
         #     print(f'name={a} length={l}')
-
+        stage = 0
         for rounds_here, load_method, iterate_method in COMPUTE_STAGES:
             body = []  # array of slots
             round_num = -1
+            stage += 1
             for round in range(rounds_here):
                 for i in range(0, batch_size, VLEN):
                     vbatch = int(i/VLEN)
@@ -361,6 +621,7 @@ class KernelBuilder:
                     vtmp2 = arr_vtmp2[mb_num]
                     vtmp3 = arr_vtmp3[mb_num]
                     vtmp4 = arr_vtmp4[mb_num]
+                    vtmp5 = arr_vtmp5[mb_num]
 
                     tmp_idx_v = mega_idx_v[vbatch]
                     tmp_val_v = mega_val_v[vbatch]
@@ -392,42 +653,85 @@ class KernelBuilder:
                             body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vtmp2, tmp_node_val_v)))
 
                         case x if x == LOAD_THREE:
-                            body.append(("valu", MultiSlot(slots=(
-                                    ("multiply_add", tmp_node_val_v, vtmp1, vf[8], vf[7]),
-                                    ("multiply_add", vtmp2,          vtmp1, vf[10], vf[9]),
-                                    ("multiply_add", vtmp3,          vtmp1, vf[12], vf[11]),
-                                    ("multiply_add", vtmp4,          vtmp1, vf[14], vf[13]),
-                                    ("&", vtmp1, tmp_idx_v, vconst[2])
-                                ))))
 
-                            body.append(("valu", MultiSlot(slots=(
-                                    ("-", vtmp2, vtmp2, tmp_node_val_v),
-                                    ("-", vtmp4, vtmp4, vtmp3),
-                                    (">>",vtmp1, vtmp1,     vconst[1])
-                                ))))
+                            tvector = [vtmp5, vtmp2, vtmp3, vtmp4]
+                            base = 7
+                            slots = []
+                            for i in range(4):
+                                slots.append(("multiply_add", tvector[i], vtmp1, vf[base+i*2+1], vf[base+i*2]))
+                            body.append(("valu", MultiSlot(slots=slots)))
+  
+                            slots = []
+                            for i in range(2):
+                                slots.append(("-", tvector[i*2+1], tvector[i*2+1], tvector[i*2]))
+                            body.append(("valu", MultiSlot(slots=slots)))
 
-                            # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
-                            # body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
+                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
+                            body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
 
-                            body.append(("valu", MultiSlot(slots=(
-                                    ("multiply_add", vtmp2, vtmp1, vtmp2, tmp_node_val_v),
-                                    ("multiply_add", vtmp4, vtmp1, vtmp4, vtmp3),
-                                    ("&", vtmp1, tmp_idx_v, vconst[4])
-                                ))))
+                            slots = []
+                            for i in range(2):
+                                slots.append(("multiply_add", tvector[i*2+1], vtmp1, tvector[i*2+1], tvector[i*2]))
+                            body.append(("valu", MultiSlot(slots=slots)))
 
-                            body.append(("valu", MultiSlot(slots=(
-                                    ("-", vtmp4, vtmp4, vtmp2),
-                                    (">>",vtmp1, vtmp1, vconst[2])
-                                ))))
+                            tvector = [vtmp2, vtmp4]
 
-                            # body.append(("valu", ("-", vtmp4, vtmp4, vtmp2)))
-                            # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
-                            # body.append(("valu", (">>",vtmp1, vtmp1, vconst[2])))
+                            body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
+                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
+                            body.append(("valu", (">>",vtmp1, vtmp1, vconst[2])))
 
-                            body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, vtmp4, vtmp2)))
 
-                        case x if x == "LOAD_FOUR":
-                            pass
+                            body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, tvector[1], tvector[0])))
+
+                        case x if x == LOAD_FOUR:
+                            
+                            # body.append(("valu", ("+", tmp_node_val_v, vconst[0], vconst[0])))
+
+                            outputs = [tmp_node_val_v, vtmp2]
+                            for offset in range(2):
+                                if offset > 0:
+                                    body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[1])))
+
+                                base = 15+offset*8
+                                tvector = [vtmp2, vtmp3, vtmp4, vtmp5]
+                                slots = []
+                                if offset == 0:
+                                    slots.append(("+", tmp_node_val_v, vconst[0], vconst[0]))
+                                # if offset > 0:
+                                #     slots.append(("&", vtmp1, tmp_idx_v, vconst[1]))
+                                for i in range(4):
+                                    slots.append(("multiply_add", tvector[i], vtmp1, vf[base+i*2+1], vf[base+i*2]))
+                                body.append(("valu", MultiSlot(slots=slots)))
+
+                                slots = []
+                                for i in range(2):
+                                    slots.append(("-", tvector[i*2+1], tvector[i*2+1], tvector[i*2]))
+                                body.append(("valu", MultiSlot(slots=slots)))
+
+                                body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
+                                body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
+
+                                slots = []
+                                for i in range(2):
+                                    slots.append(("multiply_add", tvector[i*2+1], vtmp1, tvector[i*2+1], tvector[i*2]))
+                                body.append(("valu", MultiSlot(slots=slots)))
+
+                                tvector = [vtmp3, vtmp5]
+
+                                body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
+                                body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
+                                body.append(("valu", (">>",vtmp1, vtmp1,     vconst[2])))
+
+                                body.append(("valu", ("multiply_add",outputs[offset], vtmp1, tvector[1], tvector[0])))
+                                
+                            tvector = [outputs[0], outputs[1]]
+                            body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
+                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[8])))
+                            body.append(("valu", (">>",vtmp1, vtmp1,     vconst[3])))
+                            body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, tvector[1], tvector[0])))
+
+                            
+                            
                             # load 4 vectors of tree
                             # for each item - check against idx value, and add
                         case x if x == NORMAL_LOAD:
@@ -456,10 +760,14 @@ class KernelBuilder:
                             # body.append(("valu", ("vbroadcast", tmp_idx_v, zero_const)))
                             body.append(("valu", ("*", tmp_idx_v, vone, vone)))
 
-
             # now combine everything
             # body_instrs = self.build_multi(body)
-            body_instrs = self.build_compress(body, batch_size, rounds_here)
+            if stage == 6 or True:
+                body_instrs = self.compile(body, True)
+                print(f'before: {len(body)}')
+                print(f'after:  {len(body_instrs)}')
+            else:
+                body_instrs = self.build_compress(body, batch_size, rounds_here)
             self.instrs.extend(body_instrs)  
 
         body = []
@@ -594,7 +902,7 @@ class Tests(unittest.TestCase):
     #             )
 
     def test_kernel_cycles(self):
-        # do_kernel_test(4, 6, 8, trace=True, prints=True)
+        # do_kernel_test(10, 16, 16, trace=True, prints=False)
         # do_kernel_test(1, 16, 240, trace=False, prints=False)
         do_kernel_test(10, 16, 256, trace=False, prints=False)
 

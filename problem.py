@@ -274,6 +274,7 @@ class Machine:
                 self.scratch_write[dest] = self.mem[core.scratch[addr]]
             case ("load_offset", dest, addr, offset):
                 # Handy for treating vector dest and addr as a full block in the mini-compiler if you want
+                assert core.scratch[addr + offset] <= len(self.mem), f'self.mem is out of range at {core.scratch[addr + offset]}'
                 self.scratch_write[dest + offset] = self.mem[
                     core.scratch[addr + offset]
                 ]
