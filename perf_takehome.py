@@ -223,31 +223,14 @@ class KernelBuilder:
         # Any debug engine instruction is ignored by the submission simulator
         self.add("debug", ("comment", "Starting loop"))
 
-        CONSTS = 2**4-1
+        CONSTS = 9
         const_int = [zero_const, one_const, two_const] + [self.scratch_const(i) for i in range(3,CONSTS)]
         vconst = [self.alloc_scratch(f'vconst{i}', VLEN) for i in range(CONSTS)]
         for i in range(CONSTS):
             self.add("valu", ("vbroadcast", vconst[i], const_int[i]))
 
-        const_4 = const_int[4]
-        const_5 = const_int[5]
-        const_6 = const_int[6]
-
         vone = vconst[1]
         vtwo = vconst[2]
-        vfour = vconst[4]
-        vfive = vconst[5]
-        vsix = vconst[6]
-        # vfour = self.alloc_scratch('vfour', VLEN)
-        # vfive = self.alloc_scratch('vfive', VLEN)
-        # vsix = self.alloc_scratch('vsix', VLEN)
-        # self.add("valu", ("vbroadcast", vfour, const_4))
-        # self.add("valu", ("vbroadcast", vfive, const_5))
-        # self.add("valu", ("vbroadcast", vsix, const_6))
-
-        # # self.add("valu", ("vbroadcast", vzero, zero_const))
-        # self.add("valu", ("vbroadcast", vone, one_const))
-        # self.add("valu", ("vbroadcast", vtwo, two_const))
 
         self.mb_size = 6
         vbatch_size = int(batch_size/VLEN)
@@ -289,10 +272,7 @@ class KernelBuilder:
         self.add("alu", ("+", arr_vtmp1[0], self.scratch['forest_values_p'], const_int[8]))
         self.add("load", ("vload", vtree+8, arr_vtmp1[0]))
 
-        # self.add("flow", ("pause",))
-        # # Any debug engine instruction is ignored by the submission simulator
-        # self.add("debug", ("comment", "Starting loop"))
-        # return
+
 
 
         vforest_values = [self.alloc_scratch(f'vf{i}', VLEN) for i in range(2**4-1)]
@@ -364,6 +344,9 @@ class KernelBuilder:
             [rounds - forest_height - 5, NORMAL_LOAD,       NORMAL_ITERATE],
         ]
 
+        # for a,l in self.scratch_debug.values():
+        #     print(f'name={a} length={l}')
+
         for rounds_here, load_method, iterate_method in COMPUTE_STAGES:
             body = []  # array of slots
             round_num = -1
@@ -396,16 +379,17 @@ class KernelBuilder:
                             # vtmp1 has the value we need from the previous iteration
                             body.append(("valu", MultiSlot(slots=(
                                     ("multiply_add", tmp_node_val_v, vtmp1, vf[4], vf[3]),
-                                    ("multiply_add", vtmp3,          vtmp1, vf[6], vf[5])
+                                    ("multiply_add", vtmp2,          vtmp1, vf[6], vf[5]),
+                                    ("&", vtmp1, tmp_idx_v, vconst[2])
                                 ))))
 
                             body.append(("valu", MultiSlot(slots=(
-                                   ("-", vtmp3, vtmp3, tmp_node_val_v),
-                                   ("&", vtmp1, tmp_idx_v, vconst[2])
+                                   ("-", vtmp2, vtmp2, tmp_node_val_v),
+                                   (">>",vtmp1, vtmp1, vconst[1])
+                                   
                                 ))))
 
-                            body.append(("valu", (">>",vtmp1, vtmp1, vconst[1])))
-                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vtmp3, tmp_node_val_v)))
+                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vtmp2, tmp_node_val_v)))
 
                         case x if x == LOAD_THREE:
                             body.append(("valu", MultiSlot(slots=(
@@ -442,13 +426,10 @@ class KernelBuilder:
 
                             body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, vtmp4, vtmp2)))
 
-                            """
-                                x = idx==4
-                                val = ma x*vf3 + val
-                                x = idx==5
-                                val = ma x*vf4 + val
-
-                            """
+                        case x if x == "LOAD_FOUR":
+                            pass
+                            # load 4 vectors of tree
+                            # for each item - check against idx value, and add
                         case x if x == NORMAL_LOAD:
                             body.append(("valu", ("+", vtmp2, tmp_idx_v, vforest_values_p)))
                             for j in range(VLEN):
@@ -526,6 +507,8 @@ class KernelBuilder:
                 used  += len(slots)
                 total += SLOT_LIMITS[e]
         print(f'efficiency: {used=} {total=} {gap=} ratio={1.0*used/total}')
+
+        print(f'size of tree:{n_nodes}')
 
         print(f'scratch used: {self.scratch_ptr=} out of {SCRATCH_SIZE}')
 
