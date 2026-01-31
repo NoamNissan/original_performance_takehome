@@ -268,7 +268,7 @@ class Compiler:
 
         if self.debug:
             print('done compiling')
-            print('\n'.join([f'{i}' for i in self.output]))
+            print('\n'.join([f'{len([i[k] for k in i][0])}: {i}' for i in self.output]))
 
 
                 
@@ -511,7 +511,12 @@ class KernelBuilder:
         # arr_tmp_addr_val = [self.alloc_scratch(f'tmp_addr_val_{i}') for i in range(self.mb_size)]
 
         # Vector scratch registers
-        arr_vtmp1 = [self.alloc_scratch(f'vtmp1_{i}', VLEN) for i in range(vbatch_size)]
+        arr_vtmp1 = [self.alloc_scratch(f'vtmp1_{i}', VLEN) for i in range(32)]
+        implemented_height = 5
+        arr_vparity = []
+        for x in range(self.mb_size):
+            arr_vparity.append([arr_vtmp1[x*implemented_height + y] for y in range(implemented_height)])
+        # arr_vparity = [[arr_vtmp1[x*implemented_height + y] for y in range(implemented_height)] for x in range(self.mb_size)]
         arr_vtmp2 = [self.alloc_scratch(f'vtmp2_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp3 = [self.alloc_scratch(f'vtmp3_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp4 = [self.alloc_scratch(f'vtmp4_{i}', VLEN) for i in range(self.mb_size)]
@@ -601,25 +606,33 @@ class KernelBuilder:
         # idx iteration method
         WRAPAROUND = "wraparound"
         NORMAL_ITERATE = "normal_iterate"
+        PARITY_AWARE = "parity_aware"
+
+        STAGES_DICT = {
+            0: [BROADCAST_ZERO, NORMAL_ITERATE],
+            1: [LOAD_ONE, NORMAL_ITERATE],
+            2: [LOAD_TWO, NORMAL_ITERATE],
+            10: [NORMAL_LOAD, WRAPAROUND]
+        }
 
         # rounds, tmp_node_val-method, iter-method
         COMPUTE_STAGES = [
             # First round, load tmp_node_val_v using broadcast
             [1,                          BROADCAST_ZERO,          NORMAL_ITERATE],    # BROADCAST_ZERO
-            [1,                          LOAD_ONE,          NORMAL_ITERATE], # LOAD_ONE
-            [1,                          LOAD_TWO,          NORMAL_ITERATE], # LOAD_TWO
-            [1,                          LOAD_THREE,          NORMAL_ITERATE], 
-            # [1,                          LOAD_FOUR,          NORMAL_ITERATE], 
+            [1,                          NORMAL_LOAD,          NORMAL_ITERATE], # LOAD_ONE
+            [1,                          NORMAL_LOAD,          NORMAL_ITERATE], # LOAD_TWO
+            [1,                          NORMAL_LOAD,          NORMAL_ITERATE], #LOAD_THREE
+            [1,                          NORMAL_LOAD,          NORMAL_ITERATE],  # LOAD_FOUR
             # Run until wrap-around
-            [forest_height - 4,          NORMAL_LOAD,          NORMAL_ITERATE],
+            [forest_height - 5,          NORMAL_LOAD,          NORMAL_ITERATE],
             # Wrap around
             [1,                          NORMAL_LOAD,          WRAPAROUND],
             # First round after wraparound
-            [1,                          BROADCAST_ZERO,          NORMAL_ITERATE],    # BROADCAST_ZERO
-            [1,                          LOAD_ONE,          NORMAL_ITERATE], # LOAD_ONE
-            [1,                          LOAD_TWO,          NORMAL_ITERATE], # LOAD_TWO
-            [1,                          LOAD_THREE,          NORMAL_ITERATE],
-            # [1,                          LOAD_FOUR,          NORMAL_ITERATE], 
+            [1,                          NORMAL_LOAD,          NORMAL_ITERATE],    # BROADCAST_ZERO
+            [1,                          NORMAL_LOAD,          NORMAL_ITERATE], # LOAD_ONE
+            [1,                          NORMAL_LOAD,          NORMAL_ITERATE], # LOAD_TWO
+            [1,                          NORMAL_LOAD,          NORMAL_ITERATE], # LOAD_THREE
+            # [1,                          LOAD_FOUR,          NORMAL_ITERATE],  # LOAD_FOUR
             # Last set of rounds
             [rounds - forest_height - 5, NORMAL_LOAD,       NORMAL_ITERATE],
         ]
@@ -627,171 +640,186 @@ class KernelBuilder:
         # for a,l in self.scratch_debug.values():
         #     print(f'name={a} length={l}')
         stage = 0
-        for rounds_here, load_method, iterate_method in COMPUTE_STAGES:
+        # for rounds_here, load_method, iterate_method in COMPUTE_STAGES:
+        
+        round_num = -1
+        stage += 1
+        for round in range(rounds):
             body = []  # array of slots
-            round_num = -1
-            stage += 1
-            for round in range(rounds_here):
-                for i in range(0, batch_size, VLEN):
-                    vbatch = int(i/VLEN)
-                    round_num += 1
-                    # mb_num = vbatch % self.mb_size
-                    mb_num = round_num % self.mb_size
+            for i in range(0, batch_size, VLEN):
+                if round in STAGES_DICT:
+                    load_method, iterate_method = STAGES_DICT[round]
+                else:
+                    load_method, iterate_method = NORMAL_LOAD, NORMAL_ITERATE
 
-                    vtmp1 = arr_vtmp1[vbatch]
-                    vtmp2 = arr_vtmp2[mb_num]
-                    vtmp3 = arr_vtmp3[mb_num]
-                    vtmp4 = arr_vtmp4[mb_num]
-                    vtmp5 = arr_vtmp5[mb_num]
+                vbatch = int(i/VLEN)
+                # print(f'{vbatch=} {round=}')
+                round_num += 1
+                # mb_num = vbatch % self.mb_size
+                mb_num = round_num % self.mb_size
 
-                    tmp_idx_v = mega_idx_v[vbatch]
-                    tmp_val_v = mega_val_v[vbatch]
+                tlevel = round % (forest_height+1)
+                if load_method != NORMAL_LOAD:
+                    # print(arr_vparity)
+                    # print(f'{tlevel=}, {mb_num=}')
+                    vparity = arr_vparity[mb_num][tlevel]
+                vtmp1 = arr_vtmp1[vbatch]
+                # vtmp1 = arr_vtmp1
+                # vparity = arr_vtmp1
+                vtmp2 = arr_vtmp2[mb_num]
+                vtmp3 = arr_vtmp3[mb_num]
+                vtmp4 = arr_vtmp4[mb_num]
+                vtmp5 = arr_vtmp5[mb_num]
 
-                    tmp_node_val_v = arr_tmp_node_val_v[mb_num]
+                tmp_idx_v = mega_idx_v[vbatch]
+                tmp_val_v = mega_val_v[vbatch]
 
-                    match load_method:
-                        case x if x == BROADCAST_ZERO:
-                            # using vf0 directly in "^" command
-                            pass
-                        case x if x == LOAD_ONE:
-                            # vtmp1 has the value we need from the previous iteration
-                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vf[2], vf[1])))
-                        case x if x == LOAD_TWO:
+                tmp_node_val_v = arr_tmp_node_val_v[mb_num]
 
-                            # vtmp1 has the value we need from the previous iteration
-                            body.append(("valu", MultiSlot(slots=(
-                                    ("multiply_add", tmp_node_val_v, vtmp1, vf[4], vf[3]),
-                                    ("multiply_add", vtmp2,          vtmp1, vf[6], vf[5]),
-                                    ("&", vtmp1, tmp_idx_v, vconst[2])
-                                ))))
+                match load_method:
+                    case x if x == BROADCAST_ZERO:
+                        # using vf0 directly in "^" command
+                        pass
+                    case x if x == LOAD_ONE:
+                        # vtmp1 has the value we need from the previous iteration
+                        body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vf[2], vf[1])))
+                    case x if x == LOAD_TWO:
 
-                            body.append(("valu", MultiSlot(slots=(
-                                   ("-", vtmp2, vtmp2, tmp_node_val_v),
-                                   (">>",vtmp1, vtmp1, vconst[1])
-                                   
-                                ))))
+                        # vtmp1 has the value we need from the previous iteration
+                        body.append(("valu", MultiSlot(slots=(
+                                ("multiply_add", tmp_node_val_v, vtmp1, vf[4], vf[3]),
+                                ("multiply_add", vtmp2,          vtmp1, vf[6], vf[5]),
+				                ("&", vtmp1, tmp_idx_v, vconst[2])
+                            ))))
 
-                            body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vtmp2, tmp_node_val_v)))
+                        body.append(("valu", MultiSlot(slots=(
+                                ("-", vtmp2, vtmp2, tmp_node_val_v),
+                                (">>",vtmp1, vtmp1, vconst[1])
+                            ))))
 
-                        case x if x == LOAD_THREE:
+                        body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vtmp2, tmp_node_val_v)))
 
-                            tvector = [vtmp5, vtmp2, vtmp3, vtmp4]
-                            base = 7
+                    case x if x == LOAD_THREE:
+
+                        tvector = [vtmp5, vtmp2, vtmp3, vtmp4]
+                        base = 7
+                        slots = []
+                        for i in range(4):
+                            slots.append(("multiply_add", tvector[i], vtmp1, vf[base+i*2+1], vf[base+i*2]))
+                        body.append(("valu", MultiSlot(slots=slots)))
+
+                        slots = []
+                        for i in range(2):
+                            slots.append(("-", tvector[i*2+1], tvector[i*2+1], tvector[i*2]))
+                        body.append(("valu", MultiSlot(slots=slots)))
+
+                        body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
+                        body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
+
+                        slots = []
+                        for i in range(2):
+                            slots.append(("multiply_add", tvector[i*2+1], vtmp1, tvector[i*2+1], tvector[i*2]))
+                        body.append(("valu", MultiSlot(slots=slots)))
+
+                        tvector = [vtmp2, vtmp4]
+
+                        body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
+                        body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
+                        body.append(("valu", (">>",vtmp1, vtmp1, vconst[2])))
+
+
+                        body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, tvector[1], tvector[0])))
+
+                    case x if x == LOAD_FOUR:
+                        
+                        # body.append(("valu", ("+", tmp_node_val_v, vconst[0], vconst[0])))
+
+                        outputs = [tmp_node_val_v, vtmp2]
+                        for offset in range(2):
+                            if offset > 0:
+                                body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[1])))
+
+                            base = 15+offset*8
+                            tvector = [vtmp2, vtmp3, vtmp4, vtmp5]
                             slots = []
+                            if offset == 0:
+                                slots.append(("+", tmp_node_val_v, vconst[0], vconst[0]))
+
                             for i in range(4):
                                 slots.append(("multiply_add", tvector[i], vtmp1, vf[base+i*2+1], vf[base+i*2]))
                             body.append(("valu", MultiSlot(slots=slots)))
-  
+
                             slots = []
                             for i in range(2):
                                 slots.append(("-", tvector[i*2+1], tvector[i*2+1], tvector[i*2]))
                             body.append(("valu", MultiSlot(slots=slots)))
 
                             body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
-                            body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
+                            body.append(("valu", ("==",vtmp1, vtmp1,     vconst[2])))
 
                             slots = []
                             for i in range(2):
                                 slots.append(("multiply_add", tvector[i*2+1], vtmp1, tvector[i*2+1], tvector[i*2]))
                             body.append(("valu", MultiSlot(slots=slots)))
 
-                            tvector = [vtmp2, vtmp4]
+                            tvector = [vtmp3, vtmp5]
 
                             body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
                             body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
-                            body.append(("valu", (">>",vtmp1, vtmp1, vconst[2])))
+                            body.append(("valu", ("==",vtmp1, vtmp1,     vconst[4])))
 
-
-                            body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, tvector[1], tvector[0])))
-
-                        case x if x == LOAD_FOUR:
+                            body.append(("valu", ("multiply_add",outputs[offset], vtmp1, tvector[1], tvector[0])))
                             
-                            # body.append(("valu", ("+", tmp_node_val_v, vconst[0], vconst[0])))
+                        tvector = [outputs[0], outputs[1]]
+                        body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
+                        body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[8])))
+                        body.append(("valu", ("==",vtmp1, vtmp1,     vconst[8])))
+                        body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, tvector[1], tvector[0])))
 
-                            outputs = [tmp_node_val_v, vtmp2]
-                            for offset in range(2):
-                                if offset > 0:
-                                    body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[1])))
-
-                                base = 15+offset*8
-                                tvector = [vtmp2, vtmp3, vtmp4, vtmp5]
-                                slots = []
-                                if offset == 0:
-                                    slots.append(("+", tmp_node_val_v, vconst[0], vconst[0]))
-                                # if offset > 0:
-                                #     slots.append(("&", vtmp1, tmp_idx_v, vconst[1]))
-                                for i in range(4):
-                                    slots.append(("multiply_add", tvector[i], vtmp1, vf[base+i*2+1], vf[base+i*2]))
-                                body.append(("valu", MultiSlot(slots=slots)))
-
-                                slots = []
-                                for i in range(2):
-                                    slots.append(("-", tvector[i*2+1], tvector[i*2+1], tvector[i*2]))
-                                body.append(("valu", MultiSlot(slots=slots)))
-
-                                body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
-                                body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
-
-                                slots = []
-                                for i in range(2):
-                                    slots.append(("multiply_add", tvector[i*2+1], vtmp1, tvector[i*2+1], tvector[i*2]))
-                                body.append(("valu", MultiSlot(slots=slots)))
-
-                                tvector = [vtmp3, vtmp5]
-
-                                body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
-                                body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
-                                body.append(("valu", (">>",vtmp1, vtmp1,     vconst[2])))
-
-                                body.append(("valu", ("multiply_add",outputs[offset], vtmp1, tvector[1], tvector[0])))
-                                
-                            tvector = [outputs[0], outputs[1]]
-                            body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
-                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[8])))
-                            body.append(("valu", (">>",vtmp1, vtmp1,     vconst[3])))
-                            body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, tvector[1], tvector[0])))
-
-                            
-                            
-                            # load 4 vectors of tree
-                            # for each item - check against idx value, and add
-                        case x if x == NORMAL_LOAD:
-                            body.append(("valu", ("+", vtmp2, tmp_idx_v, vforest_values_p)))
-                            for j in range(VLEN):
-                                # node_val = mem[forest_values_p + idx]
-                                body.append(("load", ("load_offset", tmp_node_val_v, vtmp2, j)))
+                        
+                        
+                    case x if x == NORMAL_LOAD:
+                        body.append(("valu", ("+", vtmp2, tmp_idx_v, vforest_values_p)))
+                        for j in range(VLEN):
+                            # node_val = mem[forest_values_p + idx]
+                            body.append(("load", ("load_offset", tmp_node_val_v, vtmp2, j)))
 
 
-                    # val = myhash(val ^ node_val)
-                    if load_method == BROADCAST_ZERO:
-                        body.append(("valu", ("^", tmp_val_v, tmp_val_v, vf[0])))
-                    else:
-                        body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
-                    body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
-                    self.add("debug", ("comment", "Vhash finished"))
+                # val = myhash(val ^ node_val)
+                if load_method == BROADCAST_ZERO:
+                    body.append(("valu", ("^", tmp_val_v, tmp_val_v, vf[0])))
+                else:
+                    body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
+                body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
+                self.add("debug", ("comment", "Vhash finished"))
 
-                    match iterate_method:
-                        case x if x == NORMAL_ITERATE:
-                            # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                            # Not needed for wrap-around because it always happens in the middle iteration
-                            body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
-                            body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
-                        case x if x == WRAPAROUND:
-                            # all goes to one               
-                            # body.append(("valu", ("vbroadcast", tmp_idx_v, zero_const)))
-                            body.append(("valu", ("*", tmp_idx_v, vone, vone)))
+                match iterate_method:
+                    case x if x == NORMAL_ITERATE:
+                        # idx = 2*idx + (1 if val % 2 == 0 else 2)
+                        # Not needed for wrap-around because it always happens in the middle iteration
+                        body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
+                        body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
+                    case x if x == WRAPAROUND:
+                        # all goes to one               
+                        # body.append(("valu", ("vbroadcast", tmp_idx_v, zero_const)))
+                        body.append(("valu", ("*", tmp_idx_v, vone, vone)))
+
+            # here we are compiling every vbatch on entire rounds
+            body_instrs = self.compile(body, False)
+            print(f'===== before: {len(body)} after:  {len(body_instrs)}')
+            self.instrs.extend(body_instrs)
 
             # now combine everything
             # body_instrs = self.build_multi(body)
-            if stage or True:
-                body_instrs = self.compile(body, False)
-                print(f'===== before: {len(body)} after:  {len(body_instrs)}')
-                # print(f'')
-            else:
-                body_instrs = self.build_compress(body, batch_size, rounds_here)
-                print(f'+++++ before: {len(body)} after:  {len(body_instrs)}')
+            # if stage==5 or True:
+            #     body_instrs = self.compile(body, False)
+            #     print(f'===== before: {len(body)} after:  {len(body_instrs)}')
+            #     # print(f'')
+            # else:
+            #     body_instrs = self.build_compress(body, batch_size, rounds_here)
+            #     print(f'+++++ before: {len(body)} after:  {len(body_instrs)}')
 
-            self.instrs.extend(body_instrs)  
+            # self.instrs.extend(body_instrs)  
 
         body = []
         for i in range(0, batch_size, VLEN):
