@@ -125,7 +125,8 @@ class OptimizedInstruction():
             'alu' : 1,
             'valu' : 8,
             'load' : 1,
-            'vload' : 8
+            'vload' : 8,
+            'debug': 1
             }
         return lengths[e]
 
@@ -174,6 +175,9 @@ class OptimizedInstruction():
       
 
     def add_and_register(self, e, slot) -> bool:
+        if not ENABLED:
+            self.slots.append(slot)
+            return
         assert self.permitted(e, slot), f'Trying to add an unpermitted instruction'
         self.slots.append(slot)
         self.register(slot)
@@ -191,7 +195,7 @@ class OptimizedInstruction():
         return {self.e: self.slots}
 
     
-
+ENABLED = True
 
 class Compiler:
     def __init__(self, insts, debug = False):
@@ -209,7 +213,40 @@ class Compiler:
             if len(v) == SLOT_LIMITS[e] or force:
                 self.output.append({e: self.curr[e]})
 
-    
+    def optimize(self, e, slot):
+        if not ENABLED:
+            return False, len(self.optimized)
+
+        if self.debug:
+            print(f'optimizing {slot}')
+        found = False
+        # iterate optimized, and find a non-coliding spot
+        seen = [0]
+        for a in addresses(slot):
+            if a in self.last_seen:
+                seen.append(self.last_seen[a])
+        i = max(seen)
+        while i < len(self.optimized) and not found:
+            opz = self.optimized[i]
+            if opz.permitted(e, slot):
+                opz.add_and_register(e, slot)
+                found = True
+                break
+            if e == 'load' and opz.e in ['valu', 'alu']:
+                if not opz.slot_overlaps(e, slot):
+                    nopz = OptimizedInstruction(e)
+                    nopz.add_and_register(e, slot)
+                    self.optimized = self.optimized[:i] + [nopz] + self.optimized[i:]
+                    found = True
+                    for addr in self.last_seen:
+                        if self.last_seen[addr] >= i:
+                            self.last_seen[addr] = self.last_seen[addr]+1
+                    break
+
+            opz.register(slot)
+            
+            i += 1
+        return found, i
 
     def compile(self):
         stock = [self.decompose(i) for i in self.input]
@@ -218,53 +255,54 @@ class Compiler:
             print('\n'.join([f'{i}' for i in stock]))
         # stock.reverse()
 
-        optimized = []
-        last_seen = {}
+        self.optimized = []
+        self.last_seen = {}
         for s in stock:
             # if self.debug:
             #     print(f'optimizing {s}')
             e = s[0]
             for slot in s[1]:
-                if self.debug:
-                    print(f'optimizing {slot}')
-                found = False
-                # iterate optimized, and find a non-coliding spot
-                seen = [0]
-                for a in addresses(slot):
-                    if a in last_seen:
-                        seen.append(last_seen[a])
-                i = max(seen)
-                while i < len(optimized) and not found:
-                    opz = optimized[i]
-                    if opz.permitted(e, slot):
-                        opz.add_and_register(e, slot)
-                        found = True
-                        break
-                    if e == 'load' and opz.e in ['valu', 'alu']:
-                        if not opz.slot_overlaps(e, slot):
-                            nopz = OptimizedInstruction(e)
-                            nopz.add_and_register(e, slot)
-                            optimized = optimized[:i] + [nopz] + optimized[i:]
-                            found = True
-                            for addr in last_seen:
-                                if last_seen[addr] >= i:
-                                    last_seen[addr] = last_seen[addr]+1
-                            break
+                # if self.debug:
+                #     print(f'optimizing {slot}')
+                # found = False
+                # # iterate optimized, and find a non-coliding spot
+                # seen = [0]
+                # for a in addresses(slot):
+                #     if a in last_seen:
+                #         seen.append(last_seen[a])
+                # i = max(seen)
+                # while i < len(self.optimized) and not found:
+                #     opz = self.optimized[i]
+                #     if opz.permitted(e, slot):
+                #         opz.add_and_register(e, slot)
+                #         found = True
+                #         break
+                #     if e == 'load' and opz.e in ['valu', 'alu']:
+                #         if not opz.slot_overlaps(e, slot):
+                #             nopz = OptimizedInstruction(e)
+                #             nopz.add_and_register(e, slot)
+                #             self.optimized = self.optimized[:i] + [nopz] + self.optimized[i:]
+                #             found = True
+                #             for addr in last_seen:
+                #                 if last_seen[addr] >= i:
+                #                     last_seen[addr] = last_seen[addr]+1
+                #             break
 
-                    opz.register(slot)
+                #     opz.register(slot)
                     
-                    i += 1
+                #     i += 1
+                found, i = self.optimize(e, slot)
                 if not found:
                     opz = OptimizedInstruction(e)
                     opz.add_and_register(e, slot)
-                    optimized.append(opz)
+                    self.optimized.append(opz)
                 # update last_seen
                 addr = slot[1]
-                last_seen[addr] = i
+                self.last_seen[addr] = i
                 # for addr in addresses(slot):
                 #     last_seen[addr] = i
 
-        self.output.extend([opz.build() for opz in optimized])
+        self.output.extend([opz.build() for opz in self.optimized])
 
         if self.debug:
             print('done compiling')
@@ -511,11 +549,12 @@ class KernelBuilder:
         # arr_tmp_addr_val = [self.alloc_scratch(f'tmp_addr_val_{i}') for i in range(self.mb_size)]
 
         # Vector scratch registers
-        arr_vtmp1 = [self.alloc_scratch(f'vtmp1_{i}', VLEN) for i in range(32)]
+        # arr_vtmp1 = [self.alloc_scratch(f'vtmp1_{i}', VLEN) for i in range(32)]
         implemented_height = 5
         arr_vparity = []
         for x in range(self.mb_size):
-            arr_vparity.append([arr_vtmp1[x*implemented_height + y] for y in range(implemented_height)])
+            arr_vparity.append([self.alloc_scratch(f'vtmp1_{x}_{y}', VLEN) for y in range(implemented_height)])
+            # arr_vparity.append([arr_vtmp1[x*implemented_height + y] for y in range(implemented_height)])
         # arr_vparity = [[arr_vtmp1[x*implemented_height + y] for y in range(implemented_height)] for x in range(self.mb_size)]
         arr_vtmp2 = [self.alloc_scratch(f'vtmp2_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp3 = [self.alloc_scratch(f'vtmp3_{i}', VLEN) for i in range(self.mb_size)]
@@ -542,16 +581,12 @@ class KernelBuilder:
         self.add("valu", ("-", vforest_values_p, vforest_values_p, vone))
 
         vtree = self.alloc_scratch('vtree', VLEN*4)
-        ptr = arr_vtmp1[0]
+        ptr = arr_vtmp2[0]
         self.add("alu", ("+", ptr, self.scratch['forest_values_p'], const_int[0]))
         for i in range(4):
             self.add("load", ("vload", vtree+i*VLEN, ptr))
             if i != 3:
                 self.add("alu", ("+", ptr, ptr, const_int[8]))
-
-        # self.add("load", ("vload", vtree, self.scratch['forest_values_p']))
-        # self.add("alu", ("+", arr_vtmp1[0], self.scratch['forest_values_p'], const_int[8]))
-        # self.add("load", ("vload", vtree+8, arr_vtmp1[0]))
 
 
         NUM_STORED_VF = 2**5-1
@@ -609,10 +644,18 @@ class KernelBuilder:
         PARITY_AWARE = "parity_aware"
 
         STAGES_DICT = {
-            0: [BROADCAST_ZERO, NORMAL_ITERATE],
-            1: [LOAD_ONE, NORMAL_ITERATE],
-            2: [LOAD_TWO, NORMAL_ITERATE],
-            10: [NORMAL_LOAD, WRAPAROUND]
+            0: [BROADCAST_ZERO, PARITY_AWARE],
+            1: [LOAD_ONE, PARITY_AWARE],
+            2: [LOAD_TWO, PARITY_AWARE],
+            3: [LOAD_THREE, PARITY_AWARE],
+            4: [LOAD_FOUR, NORMAL_ITERATE],
+            10: [NORMAL_LOAD, WRAPAROUND],
+
+            11: [BROADCAST_ZERO, PARITY_AWARE],
+            12: [LOAD_ONE, PARITY_AWARE],
+            13: [LOAD_TWO, PARITY_AWARE],
+            14: [LOAD_THREE, PARITY_AWARE],
+            15: [LOAD_FOUR, NORMAL_ITERATE],
         }
 
         # rounds, tmp_node_val-method, iter-method
@@ -642,30 +685,29 @@ class KernelBuilder:
         stage = 0
         # for rounds_here, load_method, iterate_method in COMPUTE_STAGES:
         
-        round_num = -1
-        stage += 1
-        for round in range(rounds):
-            body = []  # array of slots
-            for i in range(0, batch_size, VLEN):
+        # round_num = -1
+        # stage += 1
+        body = []  # array of slots
+        for vbatch_i in range(0, batch_size, VLEN):
+            for round in range(rounds):
                 if round in STAGES_DICT:
                     load_method, iterate_method = STAGES_DICT[round]
                 else:
                     load_method, iterate_method = NORMAL_LOAD, NORMAL_ITERATE
 
-                vbatch = int(i/VLEN)
+                vbatch = int(vbatch_i/VLEN)
                 # print(f'{vbatch=} {round=}')
-                round_num += 1
-                # mb_num = vbatch % self.mb_size
-                mb_num = round_num % self.mb_size
+                mb_num = vbatch % self.mb_size
+                # round_num += 1
+                # mb_num = round_num % self.mb_size
 
                 tlevel = round % (forest_height+1)
-                if load_method != NORMAL_LOAD:
+                # if load_method != NORMAL_LOAD or iterate_method != NORMAL_ITERATE:
                     # print(arr_vparity)
                     # print(f'{tlevel=}, {mb_num=}')
-                    vparity = arr_vparity[mb_num][tlevel]
-                vtmp1 = arr_vtmp1[vbatch]
-                # vtmp1 = arr_vtmp1
-                # vparity = arr_vtmp1
+                vparity = arr_vparity[mb_num]
+                vtmp1 = vparity[3]
+
                 vtmp2 = arr_vtmp2[mb_num]
                 vtmp3 = arr_vtmp3[mb_num]
                 vtmp4 = arr_vtmp4[mb_num]
@@ -681,31 +723,44 @@ class KernelBuilder:
                         # using vf0 directly in "^" command
                         pass
                     case x if x == LOAD_ONE:
+                        #TODO remove
+                        # body.append(("valu", ("&", vparity[0], tmp_idx_v, vconst[1])))
+
                         # vtmp1 has the value we need from the previous iteration
-                        body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vf[2], vf[1])))
+                        # print(f'taking vparity[{0}]={vparity[0]}')
+                        body.append(("valu", ("multiply_add", tmp_node_val_v, vparity[0], vf[2], vf[1])))
                     case x if x == LOAD_TWO:
+                        # print(f'taking vparity[{0}]={vparity[0]}')
+                        # print(f'taking vparity[{1}]={vparity[1]}')
+
+                        #TODO remove
+                        # print(f'using {vtmp1=}')
+                        # body.append(("valu", ("&", vparity[0], tmp_idx_v, vconst[1])))
 
                         # vtmp1 has the value we need from the previous iteration
                         body.append(("valu", MultiSlot(slots=(
-                                ("multiply_add", tmp_node_val_v, vtmp1, vf[4], vf[3]),
-                                ("multiply_add", vtmp2,          vtmp1, vf[6], vf[5]),
-				                ("&", vtmp1, tmp_idx_v, vconst[2])
+                                ("multiply_add", tmp_node_val_v, vparity[1], vf[4], vf[3]),
+                                ("multiply_add", vtmp2,          vparity[1], vf[6], vf[5]),
+				                # ("&", vparity[1], tmp_idx_v, vconst[2])
                             ))))
 
                         body.append(("valu", MultiSlot(slots=(
                                 ("-", vtmp2, vtmp2, tmp_node_val_v),
-                                (">>",vtmp1, vtmp1, vconst[1])
+                                # (">>",vparity[1], vparity[1], vconst[1])
                             ))))
 
-                        body.append(("valu", ("multiply_add", tmp_node_val_v, vtmp1, vtmp2, tmp_node_val_v)))
+                        body.append(("valu", ("multiply_add", tmp_node_val_v, vparity[0], vtmp2, tmp_node_val_v)))
 
                     case x if x == LOAD_THREE:
+                        #TODO remove
+                        # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[1])))
+                        # body.append(("valu", ("&", vparity[2], tmp_idx_v, vconst[1])))
 
                         tvector = [vtmp5, vtmp2, vtmp3, vtmp4]
                         base = 7
                         slots = []
                         for i in range(4):
-                            slots.append(("multiply_add", tvector[i], vtmp1, vf[base+i*2+1], vf[base+i*2]))
+                            slots.append(("multiply_add", tvector[i], vparity[2], vf[base+i*2+1], vf[base+i*2]))
                         body.append(("valu", MultiSlot(slots=slots)))
 
                         slots = []
@@ -713,31 +768,31 @@ class KernelBuilder:
                             slots.append(("-", tvector[i*2+1], tvector[i*2+1], tvector[i*2]))
                         body.append(("valu", MultiSlot(slots=slots)))
 
-                        body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
-                        body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
+                        # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
+                        # body.append(("valu", (">>",vtmp1, vtmp1,     vconst[1])))
 
                         slots = []
                         for i in range(2):
-                            slots.append(("multiply_add", tvector[i*2+1], vtmp1, tvector[i*2+1], tvector[i*2]))
+                            slots.append(("multiply_add", tvector[i*2+1], vparity[1], tvector[i*2+1], tvector[i*2]))
                         body.append(("valu", MultiSlot(slots=slots)))
 
                         tvector = [vtmp2, vtmp4]
 
                         body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
-                        body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
-                        body.append(("valu", (">>",vtmp1, vtmp1, vconst[2])))
+                        # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
+                        # body.append(("valu", (">>",vtmp1, vtmp1,     vconst[2])))
 
 
-                        body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, tvector[1], tvector[0])))
+                        body.append(("valu", ("multiply_add",tmp_node_val_v, vparity[0], tvector[1], tvector[0])))
 
                     case x if x == LOAD_FOUR:
-                        
-                        # body.append(("valu", ("+", tmp_node_val_v, vconst[0], vconst[0])))
+                        #TODO remove
+                        # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[1])))
 
                         outputs = [tmp_node_val_v, vtmp2]
                         for offset in range(2):
-                            if offset > 0:
-                                body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[1])))
+                            # if offset > 0:
+                            #     body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[1])))
 
                             base = 15+offset*8
                             tvector = [vtmp2, vtmp3, vtmp4, vtmp5]
@@ -746,7 +801,7 @@ class KernelBuilder:
                                 slots.append(("+", tmp_node_val_v, vconst[0], vconst[0]))
 
                             for i in range(4):
-                                slots.append(("multiply_add", tvector[i], vtmp1, vf[base+i*2+1], vf[base+i*2]))
+                                slots.append(("multiply_add", tvector[i], vparity[3], vf[base+i*2+1], vf[base+i*2]))
                             body.append(("valu", MultiSlot(slots=slots)))
 
                             slots = []
@@ -754,27 +809,27 @@ class KernelBuilder:
                                 slots.append(("-", tvector[i*2+1], tvector[i*2+1], tvector[i*2]))
                             body.append(("valu", MultiSlot(slots=slots)))
 
-                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
-                            body.append(("valu", ("==",vtmp1, vtmp1,     vconst[2])))
+                            # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[2])))
+                            # body.append(("valu", ("==",vtmp1, vtmp1,     vconst[2])))
 
                             slots = []
                             for i in range(2):
-                                slots.append(("multiply_add", tvector[i*2+1], vtmp1, tvector[i*2+1], tvector[i*2]))
+                                slots.append(("multiply_add", tvector[i*2+1], vparity[2], tvector[i*2+1], tvector[i*2]))
                             body.append(("valu", MultiSlot(slots=slots)))
 
                             tvector = [vtmp3, vtmp5]
 
                             body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
-                            body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
-                            body.append(("valu", ("==",vtmp1, vtmp1,     vconst[4])))
+                            # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[4])))
+                            # body.append(("valu", ("==",vtmp1, vtmp1,     vconst[4])))
 
-                            body.append(("valu", ("multiply_add",outputs[offset], vtmp1, tvector[1], tvector[0])))
+                            body.append(("valu", ("multiply_add",outputs[offset], vparity[1], tvector[1], tvector[0])))
                             
                         tvector = [outputs[0], outputs[1]]
                         body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
-                        body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[8])))
-                        body.append(("valu", ("==",vtmp1, vtmp1,     vconst[8])))
-                        body.append(("valu", ("multiply_add",tmp_node_val_v, vtmp1, tvector[1], tvector[0])))
+                        # body.append(("valu", ("&", vtmp1, tmp_idx_v, vconst[8])))
+                        # body.append(("valu", ("==",vtmp1, vtmp1,     vconst[8])))
+                        body.append(("valu", ("multiply_add",tmp_node_val_v, vparity[0], tvector[1], tvector[0])))
 
                         
                         
@@ -790,24 +845,28 @@ class KernelBuilder:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, vf[0])))
                 else:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
-                body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
+                body.extend(self.build_vhash(tmp_val_v, vtmp3, vtmp2, round, i))
                 self.add("debug", ("comment", "Vhash finished"))
 
                 match iterate_method:
                     case x if x == NORMAL_ITERATE:
-                        # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                        # Not needed for wrap-around because it always happens in the middle iteration
                         body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
+                    case x if x == PARITY_AWARE:
+                        # print(f'using vparity[{tlevel}]={vparity[tlevel]}')
+                        body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
+                        body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
                     case x if x == WRAPAROUND:
                         # all goes to one               
                         # body.append(("valu", ("vbroadcast", tmp_idx_v, zero_const)))
                         body.append(("valu", ("*", tmp_idx_v, vone, vone)))
 
-            # here we are compiling every vbatch on entire rounds
-            body_instrs = self.compile(body, False)
-            print(f'===== before: {len(body)} after:  {len(body_instrs)}')
-            self.instrs.extend(body_instrs)
+            # if mb_num == 5 or vbatch == 31:
+                # here we are compiling every vbatch on entire rounds
+        body_instrs = self.compile(body, False)
+        print(f'===== before: {len(body)} after:  {len(body_instrs)}')
+        self.instrs.extend(body_instrs)
+        body = []
 
             # now combine everything
             # body_instrs = self.build_multi(body)
@@ -826,7 +885,7 @@ class KernelBuilder:
             vbatch = int(i/VLEN)
             mb_num = vbatch % self.mb_size
 
-            vtmp1 = arr_vtmp1[mb_num]
+            vtmp3 = arr_vtmp3[mb_num]
             vtmp2 = arr_vtmp2[mb_num]
 
             tmp_idx_v = mega_idx_v[vbatch]
@@ -839,9 +898,9 @@ class KernelBuilder:
             # mem[inp_indices_p + i] = idx
             # mem[inp_values_p + i] = val
 
-            body.append(("alu", MultiSlot(slots=(("+", vtmp1, self.scratch["inp_indices_p"], i_const),
+            body.append(("alu", MultiSlot(slots=(("+", vtmp3, self.scratch["inp_indices_p"], i_const),
                                             ("+", vtmp2, self.scratch["inp_values_p"], i_const)))))
-            body.append(("store", MultiSlot(slots=(("vstore", vtmp1, tmp_idx_v), 
+            body.append(("store", MultiSlot(slots=(("vstore", vtmp3, tmp_idx_v), 
                                             ("vstore", vtmp2, tmp_val_v)))))
 
         body_instrs = self.build_compress(body, batch_size, 1)
@@ -907,14 +966,15 @@ def do_kernel_test(
         if prints:
             print(machine.mem[inp_values_p : inp_values_p + len(inp.values)])
             print(ref_mem[inp_values_p : inp_values_p + len(inp.values)])
-        assert (
-            machine.mem[inp_values_p : inp_values_p + len(inp.values)]
-            == ref_mem[inp_values_p : inp_values_p + len(inp.values)]
-        ), f"Incorrect result on round {i}"
         inp_indices_p = ref_mem[5]
         if prints:
             print(machine.mem[inp_indices_p : inp_indices_p + len(inp.indices)])
             print(ref_mem[inp_indices_p : inp_indices_p + len(inp.indices)])
+        assert (
+            machine.mem[inp_values_p : inp_values_p + len(inp.values)]
+            == ref_mem[inp_values_p : inp_values_p + len(inp.values)]
+        ), f"Incorrect result on round {i}"
+        
         # Updating these in memory isn't required, but you can enable this check for debugging
         # assert machine.mem[inp_indices_p:inp_indices_p+len(inp.indices)] == ref_mem[inp_indices_p:inp_indices_p+len(inp.indices)]
 
@@ -954,6 +1014,7 @@ class Tests(unittest.TestCase):
 
     def test_kernel_cycles(self):
         # do_kernel_test(10, 16, 16, trace=True, prints=False)
+        # do_kernel_test(10, 5, 16, trace=False, prints=False)
         # do_kernel_test(1, 16, 240, trace=False, prints=False)
         do_kernel_test(10, 16, 256, trace=False, prints=False)
 
