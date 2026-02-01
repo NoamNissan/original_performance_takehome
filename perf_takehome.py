@@ -530,7 +530,7 @@ class KernelBuilder:
         const1, const3 = self.hash_consts[hi]
         op1, val1, op2, op3, val3 = HASH_STAGES[hi]
         slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
-        slots.append(("valu", (op3, vtmp2, val_hash_addr_v,const3)))
+        slots.append(("valu", (op3, vtmp2, val_hash_addr_v, const3)))
         slots.append(("valu", (op2, val_hash_addr_v, vtmp1, vtmp2)))
         hi = 2
         const1, const3 = self.hash_consts[hi]
@@ -541,7 +541,7 @@ class KernelBuilder:
         const1, const3 = self.hash_consts[hi]
         op1, val1, op2, op3, val3 = HASH_STAGES[hi]
         slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
-        slots.append(("valu", (op3, vtmp2, val_hash_addr_v,const3)))
+        slots.append(("valu", (op3, vtmp2, val_hash_addr_v, const3)))
         slots.append(("valu", (op2, val_hash_addr_v, vtmp1, vtmp2)))
         hi = 4
         const1, const3 = self.hash_consts[hi]
@@ -552,7 +552,7 @@ class KernelBuilder:
         const1, const3 = self.hash_consts[hi]
         op1, val1, op2, op3, val3 = HASH_STAGES[hi]
         slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
-        slots.append(("valu", (op3, vtmp2, val_hash_addr_v,const3)))
+        slots.append(("valu", (op3, vtmp2, val_hash_addr_v, const3)))
         slots.append(("valu", (op2, val_hash_addr_v, vtmp1, vtmp2)))
         return slots
 
@@ -706,7 +706,7 @@ class KernelBuilder:
 
             body.append(("load",("vload", tmp_val_v, vtmp2)))
             # Initializing to one for easier usage
-            body.append(("valu", ("+", tmp_idx_v, tmp_idx_v, vone)))
+            # body.append(("valu", ("+", tmp_idx_v, tmp_idx_v, vone)))
 
         body_instrs = self.compile(body)
         print(f'===== before: {len(body)} after:  {len(body_instrs)}')
@@ -721,23 +721,23 @@ class KernelBuilder:
         LOAD_TWO = 2
         LOAD_THREE = 3
         LOAD_FOUR = 4
-        AFTER_WRAPAROUND = 777
+
         NORMAL_LOAD = 999
 
         # idx iteration method
         WRAPAROUND = "wraparound"
+        AFTER_WRAPAROUND = "after_wraparound"
         NORMAL_ITERATE = "normal_iterate"
         PARITY_AWARE = "parity_aware"
 
         STAGES_DICT = {
-            0: [BROADCAST_ZERO, PARITY_AWARE],
+            0: [BROADCAST_ZERO, AFTER_WRAPAROUND],
             1: [LOAD_ONE, PARITY_AWARE],
             2: [LOAD_TWO, PARITY_AWARE],
             3: [LOAD_THREE, PARITY_AWARE],
             4: [LOAD_FOUR, NORMAL_ITERATE],
             10: [NORMAL_LOAD, WRAPAROUND],
-
-            11: [BROADCAST_ZERO, PARITY_AWARE],
+            11: [BROADCAST_ZERO, AFTER_WRAPAROUND],
             12: [LOAD_ONE, PARITY_AWARE],
             13: [LOAD_TWO, PARITY_AWARE],
             14: [LOAD_THREE, PARITY_AWARE],
@@ -871,8 +871,12 @@ class KernelBuilder:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
                     case x if x == WRAPAROUND:
-                        # all goes to one               
-                        body.append(("valu", ("*", tmp_idx_v, vone, vone)))
+                        # next iteration we just use vone instead of tmp_idx_v
+                        pass
+                    case x if x == AFTER_WRAPAROUND:
+                        body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
+                        body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[tlevel])))
+
 
             # if mb_num == 5 or vbatch == 31:
             #     debug = False
