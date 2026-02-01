@@ -139,7 +139,7 @@ class OptimizedInstruction():
         if e in ['store', 'load']:
             if op in ['vload', 'vstore']:
                 return 8
-            if op in ['store', 'load', 'load_offset']:
+            if op in ['store', 'load', 'load_offset', 'const']:
                 return 1
             assert False, f'unknown op {e} {op}'
         assert False, f'unknown e {e}'
@@ -285,6 +285,12 @@ class Compiler:
         for s in stock:
             e = s[0]
             for slot in s[1]:
+                # if self.debug:
+                #     for opz in self.optimized:
+                #         print(f'{opz.e=} {opz.slots=}')
+                #         print(f'\t{opz.read_scratch=}')
+                #         print(f'\t{opz.written_scratch=}')
+                #     print('==================')
                 # if self.debug:
                 #     print(f'optimizing {slot}')
                 # found = False
@@ -482,34 +488,72 @@ class KernelBuilder:
         slots = []
 
         for hi, (op1, val1, op2, op3, val3) in enumerate(HASH_STAGES):
-            # slots.append(("alu", (op1, tmp1, val_hash_addr, self.scratch_const(val1))))
-            # slots.append(("alu", (op3, tmp2, val_hash_addr, self.scratch_const(val3))))
-
             slots.append(("alu", MultiSlot(slots=((op1, tmp1, val_hash_addr, self.scratch_const(val1)),(op3, tmp2, val_hash_addr, self.scratch_const(val3))))))
             slots.append(("alu", (op2, val_hash_addr, tmp1, tmp2)))
-            # slots.append(("debug", ("compare", val_hash_addr, (round, i, "hash_stage", hi))))
 
         return slots
 
     def init_hash(self):
         self.hash_consts = {}
+        self.hash_factor = {}
         slots = []
         for hi, (op1, val1, op2, op3, val3) in enumerate(HASH_STAGES):
             const1 = self.alloc_scratch(f'hash_val1_{hi}', VLEN)
             slots.append(("valu", ("vbroadcast", const1, self.scratch_const(val1))))
 
-            const3 = self.alloc_scratch(f'hash_val3_{hi}', VLEN)
-            slots.append(("valu", ("vbroadcast", const3, self.scratch_const(val3))))
+            if hi in [0,2,4]:
+                const3 = self.alloc_scratch(f'hash_vfconst_{hi}', VLEN)
+                slots.append(("valu", ("vbroadcast", const3, self.scratch_const(1<<val3))))
+            else:
+                const3 = self.alloc_scratch(f'hash_val3_{hi}', VLEN)
+                slots.append(("valu", ("vbroadcast", const3, self.scratch_const(val3))))
 
             self.hash_consts[hi] = (const1, const3)
         return slots
 
     def build_vhash(self, val_hash_addr_v, vtmp1, vtmp2, round, i):
         slots = []
-        for hi, (op1, val1, op2, op3, val3) in enumerate(HASH_STAGES):
-            const1, const3 = self.hash_consts[hi]
-            slots.append(("valu", MultiSlot(slots=((op1, vtmp1, val_hash_addr_v, const1),(op3, vtmp2, val_hash_addr_v,const3)))))
-            slots.append(("valu", (op2, val_hash_addr_v, vtmp1, vtmp2)))
+        # HASH_STAGES = [
+        #     ("+", 0x7ED55D16, "+", "<<", 12),
+        #     ("^", 0xC761C23C, "^", ">>", 19),
+        #     ("+", 0x165667B1, "+", "<<", 5),
+        #     ("+", 0xD3A2646C, "^", "<<", 9),
+        #     ("+", 0xFD7046C5, "+", "<<", 3),
+        #     ("^", 0xB55A4F09, "^", ">>", 16),
+        # ]
+        hi = 0
+        const1, const3 = self.hash_consts[hi]
+        op1, val1, op2, op3, val3 = HASH_STAGES[hi]
+        slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
+        slots.append(("valu", ("multiply_add", val_hash_addr_v, val_hash_addr_v, const3, vtmp1)))
+        hi = 1
+        const1, const3 = self.hash_consts[hi]
+        op1, val1, op2, op3, val3 = HASH_STAGES[hi]
+        slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
+        slots.append(("valu", (op3, vtmp2, val_hash_addr_v,const3)))
+        slots.append(("valu", (op2, val_hash_addr_v, vtmp1, vtmp2)))
+        hi = 2
+        const1, const3 = self.hash_consts[hi]
+        op1, val1, op2, op3, val3 = HASH_STAGES[hi]
+        slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
+        slots.append(("valu", ("multiply_add", val_hash_addr_v, val_hash_addr_v, const3, vtmp1)))
+        hi = 3
+        const1, const3 = self.hash_consts[hi]
+        op1, val1, op2, op3, val3 = HASH_STAGES[hi]
+        slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
+        slots.append(("valu", (op3, vtmp2, val_hash_addr_v,const3)))
+        slots.append(("valu", (op2, val_hash_addr_v, vtmp1, vtmp2)))
+        hi = 4
+        const1, const3 = self.hash_consts[hi]
+        op1, val1, op2, op3, val3 = HASH_STAGES[hi]
+        slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
+        slots.append(("valu", ("multiply_add", val_hash_addr_v, val_hash_addr_v, const3, vtmp1)))
+        hi = 5
+        const1, const3 = self.hash_consts[hi]
+        op1, val1, op2, op3, val3 = HASH_STAGES[hi]
+        slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
+        slots.append(("valu", (op3, vtmp2, val_hash_addr_v,const3)))
+        slots.append(("valu", (op2, val_hash_addr_v, vtmp1, vtmp2)))
         return slots
 
     def build_kernel(
@@ -558,9 +602,10 @@ class KernelBuilder:
         self.add("debug", ("comment", "Starting loop"))
 
         CONSTS = 9
+        VCONSTS = 9
         const_int = [zero_const, one_const, two_const] + [self.scratch_const(i) for i in range(3,CONSTS)]
-        vconst = [self.alloc_scratch(f'vconst{i}', VLEN) for i in range(CONSTS)]
-        for i in range(CONSTS):
+        vconst = [self.alloc_scratch(f'vconst{i}', VLEN) for i in range(VCONSTS)]
+        for i in range(VCONSTS):
             self.add("valu", ("vbroadcast", vconst[i], const_int[i]))
 
         vone = vconst[1]
@@ -652,11 +697,13 @@ class KernelBuilder:
             tmp_idx_v = mega_idx_v[vbatch]
             tmp_val_v = mega_val_v[vbatch]
 
-            i_const = self.scratch_const(i)
+
             # idx = mem[inp_indices_p + i]
             # val = mem[inp_values_p + i]
             # No need to initialize tmp_idx_v because it is zeros in the first place
+            i_const = self.scratch_const(i)
             body.append(("alu", ("+", vtmp2, self.scratch["inp_values_p"], i_const)))
+
             body.append(("load",("vload", tmp_val_v, vtmp2)))
             # Initializing to one for easier usage
             body.append(("valu", ("+", tmp_idx_v, tmp_idx_v, vone)))
