@@ -823,8 +823,6 @@ class KernelBuilder:
                             base = 15+offset*8
                             tvector = [vtmp2, vtmp3, vtmp4, vtmp5]
                             slots = []
-                            if offset == 0:
-                                slots.append(("+", tmp_node_val_v, vconst[0], vconst[0]))
 
                             for i in range(4):
                                 slots.append(("multiply_add", tvector[i], vparity[3], vf[base+i*2+1], vf[base+i*2]))
