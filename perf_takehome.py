@@ -130,10 +130,12 @@ class OptimizedInstruction():
         self.written_scratch = Scratch()
         self.read_scratch = Scratch()
 
-    def inst_length(self, e, op) -> (int, int):
+    def inst_length(self, e, op) -> (int, int): # wlength, rlength
         if e in ['alu', 'debug']:
             return 1, 1
         if e in ['valu']:
+            if op == 'vbroadcast':
+                return 8, 1
             return 8, 8
 
         if e in ['store', 'load']:
@@ -623,9 +625,7 @@ class KernelBuilder:
 
 
         body = []
-        self.add("valu", ("vbroadcast", vforest_values_p, self.scratch['forest_values_p']))
-        # The need to decrease here is because we are managing tmp_idx_v as 1-base instead of 0-base
-        self.add("valu", ("-", vforest_values_p, vforest_values_p, vone))
+        self.add("valu", ("vbroadcast", vforest_values_p, self.scratch['forest_values_p']))        
 
         vtree = self.alloc_scratch('vtree', VLEN*4)
         ptr = arr_vtmp2[0]
@@ -646,8 +646,12 @@ class KernelBuilder:
         for i in range(2, NUM_STORED_VF, 2):
             body.append(("valu", ("-", vforest_values[i], vforest_values[i], vforest_values[i-1])))
 
+        # The need to decrease here is because we are managing tmp_idx_v as 1-base instead of 0-base
+        #TODO: This is not right after the vbroadcast of vforest_values_p to avoid an optimization bug
+        body.append(("valu", ("-", vforest_values_p, vforest_values_p, vone)))
+
         body.extend(self.init_hash())
-        body_instrs = self.compile(body, False)
+        body_instrs = self.compile(body, True)
         self.instrs.extend(body_instrs)
 
         assert batch_size % VLEN == 0
@@ -699,18 +703,18 @@ class KernelBuilder:
 
         STAGES_DICT = {
             0: [BROADCAST_ZERO, FIRST_ITERATION],
-            1: [LOAD_ONE, PARITY_AWARE],
-            2: [LOAD_TWO, PARITY_AWARE],
-            3: [LOAD_THREE, PARITY_AWARE],
-            4: [LOAD_FOUR, PARITY_AWARE],
-            5: [NORMAL_LOAD, FIRST_NORMAL_ITERATE],
-            #: [NORMAL_LOAD, NORMAL_ITERATE],
-            10: [NORMAL_LOAD, WRAPAROUND],
-            11: [BROADCAST_ZERO, AFTER_WRAPAROUND],
-            12: [LOAD_ONE, AFTER_WRAPAROUND],
-            13: [LOAD_TWO, AFTER_WRAPAROUND],
-            14: [LOAD_THREE, AFTER_WRAPAROUND],
-            15: [LOAD_FOUR, LAST_ITERATION],
+            1: [LOAD_ONE,       PARITY_AWARE],
+            2: [LOAD_TWO,       PARITY_AWARE],
+            3: [LOAD_THREE,     PARITY_AWARE],
+            4: [LOAD_FOUR,      PARITY_AWARE],
+            5: [NORMAL_LOAD,    FIRST_NORMAL_ITERATE],
+            #: [NORMAL_LOAD,    NORMAL_ITERATE],
+            10: [NORMAL_LOAD,   WRAPAROUND],
+            11: [BROADCAST_ZERO,AFTER_WRAPAROUND],
+            12: [LOAD_ONE,      AFTER_WRAPAROUND],
+            13: [LOAD_TWO,      AFTER_WRAPAROUND],
+            14: [LOAD_THREE,    AFTER_WRAPAROUND],
+            15: [LOAD_FOUR,     LAST_ITERATION],
         }
 
         # round_num = -1
