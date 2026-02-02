@@ -130,46 +130,38 @@ class OptimizedInstruction():
         self.written_scratch = Scratch()
         self.read_scratch = Scratch()
 
-    def inst_length(self, e, op):
+    def inst_length(self, e, op) -> (int, int):
         if e in ['alu', 'debug']:
-            return 1
+            return 1, 1
         if e in ['valu']:
-            return 8
+            return 8, 8
 
         if e in ['store', 'load']:
-            if op in ['vload', 'vstore']:
-                return 8
+            if op == 'vload':
+                return 8, 1
+            if op == 'vstore':
+                return 1, 8
             if op in ['store', 'load', 'load_offset', 'const']:
-                return 1
+                return 1, 1
             assert False, f'unknown op {e} {op}'
         assert False, f'unknown e {e}'
-        lengths = {
-            'alu' : 1,
-            'valu' : 8,
-            'load' : 1,
-            'vload' : 8,
-            'debug': 1,
-            'store': 1,
-            'vstore':8
-            }
-        return lengths[e]
 
     def slot_overlaps(self, e, slot):
         offset = 0 if slot[0] != 'load_offset' else slot[3]
-        length = self.inst_length(e, slot[0])
+        wlength, rlength = self.inst_length(e, slot[0])
         waddr = slot[1] + offset
 
         overlap = False
-        if self.written_scratch.area_overlap(waddr, length):
+        if self.written_scratch.area_overlap(waddr, wlength):
             overlap = True
 
-        if self.read_scratch.area_overlap(waddr, length):
+        if self.read_scratch.area_overlap(waddr, wlength):
             overlap = True
 
         read_addrs = slot[2:] if slot[0] != 'load_offset' else slot[2:-1]
         for raddr in read_addrs:
             raddr += offset
-            if self.written_scratch.area_overlap(raddr, length):
+            if self.written_scratch.area_overlap(raddr, rlength):
                 overlap = True
 
         return overlap
@@ -188,14 +180,14 @@ class OptimizedInstruction():
 
     def insert_area(self, e, slot):
         offset = 0 if slot[0] != 'load_offset' else slot[3]
-        length = self.inst_length(e, slot[0])
+        wlength, rlength = self.inst_length(e, slot[0])
         taddr = slot[1] + offset
 
-        self.written_scratch.insert(taddr, length)
+        self.written_scratch.insert(taddr, wlength)
         read_addrs = slot[2:] if slot[0] != 'load_offset' else slot[2:-1]
         for raddr in read_addrs:
             raddr += offset
-            self.read_scratch.insert(raddr, length)
+            self.read_scratch.insert(raddr, rlength)
       
 
     def add_and_register(self, e, slot) -> bool:
@@ -285,12 +277,12 @@ class Compiler:
         for s in stock:
             e = s[0]
             for slot in s[1]:
-                # if self.debug:
-                #     for opz in self.optimized:
-                #         print(f'{opz.e=} {opz.slots=}')
-                #         print(f'\t{opz.read_scratch=}')
-                #         print(f'\t{opz.written_scratch=}')
-                #     print('==================')
+                if self.debug:
+                    for opz in self.optimized:
+                        print(f'{opz.e=} {opz.slots=}')
+                        print(f'\t{opz.read_scratch=}')
+                        print(f'\t{opz.written_scratch=}')
+                    print('==================')
                 # if self.debug:
                 #     print(f'optimizing {slot}')
                 # found = False
@@ -625,6 +617,7 @@ class KernelBuilder:
 
         mega_idx_v = [self.alloc_scratch(f'mega_idx_v_{i}', VLEN) for i in range(vbatch_size)]
         mega_val_v = [self.alloc_scratch(f'mega_val_v_{i}', VLEN) for i in range(vbatch_size)]
+        value_ptr_v  = [self.alloc_scratch(f'value_ptr_{i}') for i in range(vbatch_size)]
 
         vforest_values_p = self.alloc_scratch('vforest_values_p', VLEN)
 
@@ -669,14 +662,15 @@ class KernelBuilder:
 
             tmp_idx_v = mega_idx_v[vbatch]
             tmp_val_v = mega_val_v[vbatch]
+            value_ptr = value_ptr_v[vbatch]
 
 
             # idx = mem[inp_indices_p + i]
             # val = mem[inp_values_p + i]
             # No need to initialize tmp_idx_v because it is zeros in the first place
             i_const = self.scratch_const(i)
-            body.append(("alu", ("+", vtmp2, self.scratch["inp_values_p"], i_const)))
-            body.append(("load",("vload", tmp_val_v, vtmp2)))
+            body.append(("alu", ("+", value_ptr, self.scratch["inp_values_p"], i_const)))
+            body.append(("load",("vload", tmp_val_v, value_ptr)))
 
         body_instrs = self.compile(body)
         print(f'===== before: {len(body)} after:  {len(body_instrs)}')
@@ -820,11 +814,12 @@ class KernelBuilder:
       
                     case x if x == NORMAL_LOAD:
                         if iterate_method == FIRST_NORMAL_ITERATE:
-                            body.append(("valu", ("multiply_add", tmp_idx_v, vone,      vtwo, vparity[0])))
-                            body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[1])))
-                            body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[2])))
-                            body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[3])))
-                            body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[4])))
+                            # body.append(("valu", ("multiply_add", tmp_idx_v, vone,      vtwo, vparity[0])))
+                            # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[1])))
+                            # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[2])))
+                            # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[3])))
+                            # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[4])))
+                            pass
                         body.append(("valu", ("+", vtmp2, tmp_idx_v, vforest_values_p)))
                         for j in range(VLEN):
                             # node_val = mem[forest_values_p + idx]
@@ -842,7 +837,7 @@ class KernelBuilder:
                 match iterate_method:
                     case x if x == FIRST_ITERATION:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
-                        # body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[tlevel])))
+                        body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[tlevel])))
                     case x if x == FIRST_NORMAL_ITERATE:
                         body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
@@ -851,7 +846,7 @@ class KernelBuilder:
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
                     case x if x == PARITY_AWARE:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
-                        # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
+                        body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
                     case x if x == WRAPAROUND:
                         # next iteration we just use vone instead of tmp_idx_v
                         pass
@@ -882,6 +877,7 @@ class KernelBuilder:
 
             tmp_idx_v = mega_idx_v[vbatch]
             tmp_val_v = mega_val_v[vbatch]
+            value_ptr = value_ptr_v[vbatch]
 
             # one last -1
             # body.append(("valu", ("-", tmp_idx_v, tmp_idx_v, vone)))
@@ -891,9 +887,9 @@ class KernelBuilder:
             # mem[inp_values_p + i] = val
 
             # body.append(("alu", ("+", vtmp3, self.scratch["inp_indices_p"], i_const)))
-            body.append(("alu", ("+", vtmp2, self.scratch["inp_values_p"], i_const)))
+            # body.append(("alu", ("+", vtmp2, self.scratch["inp_values_p"], i_const)))
             # body.append(("store", ("vstore", vtmp3, tmp_idx_v)))
-            body.append(("store", ("vstore", vtmp2, tmp_val_v)))
+            body.append(("store", ("vstore", value_ptr, tmp_val_v)))
 
 
         body_instrs = self.compile(body)
