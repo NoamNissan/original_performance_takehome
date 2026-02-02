@@ -708,7 +708,7 @@ class KernelBuilder:
             2: [LOAD_TWO, PARITY_AWARE],
             3: [LOAD_THREE, PARITY_AWARE],
             4: [LOAD_FOUR, PARITY_AWARE],
-            # 5: [NORMAL_LOAD, FIRST_NORMAL_ITERATE],
+            5: [NORMAL_LOAD, FIRST_NORMAL_ITERATE],
             #: [NORMAL_LOAD, NORMAL_ITERATE],
             10: [NORMAL_LOAD, WRAPAROUND],
             11: [BROADCAST_ZERO, AFTER_WRAPAROUND],
@@ -818,12 +818,17 @@ class KernelBuilder:
                         body.append(("valu", ("multiply_add", tmp_node_val_v, vparity[0], tvector[1], tvector[0])))
       
                     case x if x == NORMAL_LOAD:
-                        # if iterate_method == FIRST_NORMAL_ITERATE:
-                        #     body.append(("valu", ("multiply_add", tmp_idx_v, vone,      vtwo, vparity[0])))
-                        #     body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[1])))
-                        #     body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[2])))
-                        #     body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[3])))
-                        #     body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[4])))
+                        if iterate_method == FIRST_NORMAL_ITERATE:
+                            body.append(("valu", ("multiply_add", tmp_idx_v, vone,      vtwo, vparity[0])))
+                            # body.append(("valu", ("multiply_add", vparity[1], vparity[1], vtwo, vparity[2])))
+                            # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vconst[4], vparity[1])))
+
+
+                            body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[1])))
+                            body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[2])))
+                            body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[3])))
+                            body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[4])))
+
                         body.append(("valu", ("+", vtmp2, tmp_idx_v, vforest_values_p)))
                         for j in range(VLEN):
                             # node_val = mem[forest_values_p + idx]
@@ -841,7 +846,7 @@ class KernelBuilder:
                 match iterate_method:
                     case x if x == FIRST_ITERATION:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
-                        body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[tlevel])))
+                        # body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[tlevel])))
                     case x if x == FIRST_NORMAL_ITERATE:
                         # body.append(("valu", ("multiply_add", tmp_idx_v, vone,      vtwo, vparity[0])))
                         # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[1])))
@@ -856,20 +861,12 @@ class KernelBuilder:
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
                     case x if x == PARITY_AWARE:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
-                        body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
+                        # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
                     case x if x == WRAPAROUND:
                         # next iteration we just use vone instead of tmp_idx_v
                         pass
                     case x if x == AFTER_WRAPAROUND:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
-                        # tmp_idx_v is computed at the end of the last round
-
-                # last round
-                # if round == rounds-1:
-                #     body.append(("valu", ("multiply_add", tmp_idx_v, vparity[0], vtwo, vparity[1])))
-                #     body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[2])))
-                #     body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[3])))
-                #     body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[4])))
 
             # if mb_num == 5 or vbatch == 31:
             #     debug = False
