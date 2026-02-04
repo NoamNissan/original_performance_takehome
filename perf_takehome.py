@@ -438,10 +438,12 @@ class KernelBuilder:
             # print(f'{len(insts)=}')
         return insts
 
-    def compile(self, insts, debug = False):
+    def compile(self, insts, tag, debug = False):
         compiler = Compiler(insts, debug = debug)
         compiler.compile()
-        return compiler.build()
+        output = compiler.build()
+        print(f'===== {tag}: before: {len(insts)} after:  {len(output)}')
+        return output
             
 
     def build_optimize(self, body: list, batch_size: int, rounds: int):
@@ -475,13 +477,12 @@ class KernelBuilder:
     def scratch_const(self, val, name=None):
         if val not in self.const_map:
             addr = self.alloc_scratch(name)
-            # self.add("load", ("const", addr, val))
             self.const_inst.append(("load", ("const", addr, val)))
             self.const_map[val] = addr
         return self.const_map[val]
 
     def compile_consts(self):
-        insts =  self.compile(self.const_inst)
+        insts =  self.compile(self.const_inst, tag = 'CONSTS')
         self.instrs = insts + self.instrs
 
     def build_hash(self, val_hash_addr, tmp1, tmp2, round, i):
@@ -493,7 +494,7 @@ class KernelBuilder:
 
         return slots
 
-    def init_hash(self):
+    def init_hash(self, vone):
         self.hash_consts = {}
         self.hash_factor = {}
         slots = []
@@ -504,6 +505,7 @@ class KernelBuilder:
             if hi in [0,2,4]:
                 const3 = self.alloc_scratch(f'hash_vfconst_{hi}', VLEN)
                 slots.append(("valu", ("vbroadcast", const3, self.scratch_const(1<<val3))))
+                slots.append(("valu", ("+", const3, const3, vone)))
             else:
                 const3 = self.alloc_scratch(f'hash_val3_{hi}', VLEN)
                 slots.append(("valu", ("vbroadcast", const3, self.scratch_const(val3))))
@@ -524,8 +526,7 @@ class KernelBuilder:
         hi = 0
         const1, const3 = self.hash_consts[hi]
         op1, val1, op2, op3, val3 = HASH_STAGES[hi]
-        slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
-        slots.append(("valu", ("multiply_add", val_hash_addr_v, val_hash_addr_v, const3, vtmp1)))
+        slots.append(("valu", ("multiply_add", val_hash_addr_v, val_hash_addr_v, const3, const1)))
         hi = 1
         const1, const3 = self.hash_consts[hi]
         op1, val1, op2, op3, val3 = HASH_STAGES[hi]
@@ -535,8 +536,7 @@ class KernelBuilder:
         hi = 2
         const1, const3 = self.hash_consts[hi]
         op1, val1, op2, op3, val3 = HASH_STAGES[hi]
-        slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
-        slots.append(("valu", ("multiply_add", val_hash_addr_v, val_hash_addr_v, const3, vtmp1)))
+        slots.append(("valu", ("multiply_add", val_hash_addr_v, val_hash_addr_v, const3, const1)))
         hi = 3
         const1, const3 = self.hash_consts[hi]
         op1, val1, op2, op3, val3 = HASH_STAGES[hi]
@@ -546,8 +546,7 @@ class KernelBuilder:
         hi = 4
         const1, const3 = self.hash_consts[hi]
         op1, val1, op2, op3, val3 = HASH_STAGES[hi]
-        slots.append(("valu", (op1, vtmp1, val_hash_addr_v, const1)))
-        slots.append(("valu", ("multiply_add", val_hash_addr_v, val_hash_addr_v, const3, vtmp1)))
+        slots.append(("valu", ("multiply_add", val_hash_addr_v, val_hash_addr_v, const3, const1)))
         hi = 5
         const1, const3 = self.hash_consts[hi]
         op1, val1, op2, op3, val3 = HASH_STAGES[hi]
@@ -601,7 +600,7 @@ class KernelBuilder:
         body = []
         for i in range(VCONSTS):
             body.append(("valu", ("vbroadcast", vconst[i], const_int[i])))
-        body_instrs = self.compile(body, False)
+        body_instrs = self.compile(body, tag = 'CONST VARIABLES')
         self.instrs.extend(body_instrs)
         body = []
 
@@ -629,9 +628,6 @@ class KernelBuilder:
         value_ptr_v  = [self.alloc_scratch(f'value_ptr_{i}') for i in range(vbatch_size)]
 
         vforest_values_p = self.alloc_scratch('vforest_values_p', VLEN)
-
-
-        
         self.add("valu", ("vbroadcast", vforest_values_p, self.scratch['forest_values_p']))        
 
         vtree = self.alloc_scratch('vtree', VLEN*4)
@@ -657,8 +653,8 @@ class KernelBuilder:
         #TODO: This is not right after the vbroadcast of vforest_values_p to avoid an optimization bug
         body.append(("valu", ("-", vforest_values_p, vforest_values_p, vone)))
 
-        body.extend(self.init_hash())
-        body_instrs = self.compile(body, True)
+        body.extend(self.init_hash(vone))
+        body_instrs = self.compile(body, tag = 'VARIABLES')
         self.instrs.extend(body_instrs)
 
         assert batch_size % VLEN == 0
@@ -683,8 +679,7 @@ class KernelBuilder:
             body.append(("alu", ("+", value_ptr, self.scratch["inp_values_p"], i_const)))
             body.append(("load",("vload", tmp_val_v, value_ptr)))
 
-        body_instrs = self.compile(body)
-        print(f'===== before: {len(body)} after:  {len(body_instrs)}')
+        body_instrs = self.compile(body, tag = 'LOAD')
         self.instrs.extend(body_instrs)
         # body_instrs = self.build_compress(body, batch_size, 1)
         # # body_instrs = self.compile(body)
@@ -865,8 +860,7 @@ class KernelBuilder:
             #         debug = True
             #     # here we are compiling every vbatch on entire rounds
         debug = False
-        body_instrs = self.compile(body, debug)
-        print(f'===== before: {len(body)} after:  {len(body_instrs)}')
+        body_instrs = self.compile(body, tag = 'COMPUTE', debug=debug)
         self.instrs.extend(body_instrs)
         body = []
 
@@ -896,8 +890,7 @@ class KernelBuilder:
             body.append(("store", ("vstore", value_ptr, tmp_val_v)))
 
 
-        body_instrs = self.compile(body)
-        print(f'===== before: {len(body)} after:  {len(body_instrs)}')
+        body_instrs = self.compile(body, tag = 'STORE')
         self.instrs.extend(body_instrs)
 
         self.compile_consts()
