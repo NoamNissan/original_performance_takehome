@@ -359,6 +359,7 @@ class KernelBuilder:
         self.scratch_debug = {}
         self.scratch_ptr = 0
         self.const_map = {}
+        self.const_inst = []
 
     def debug_info(self):
         return DebugInfo(scratch_map=self.scratch_debug)
@@ -474,9 +475,14 @@ class KernelBuilder:
     def scratch_const(self, val, name=None):
         if val not in self.const_map:
             addr = self.alloc_scratch(name)
-            self.add("load", ("const", addr, val))
+            # self.add("load", ("const", addr, val))
+            self.const_inst.append(("load", ("const", addr, val)))
             self.const_map[val] = addr
         return self.const_map[val]
+
+    def compile_consts(self):
+        insts =  self.compile(self.const_inst)
+        self.instrs = insts + self.instrs
 
     def build_hash(self, val_hash_addr, tmp1, tmp2, round, i):
         slots = []
@@ -597,6 +603,7 @@ class KernelBuilder:
             body.append(("valu", ("vbroadcast", vconst[i], const_int[i])))
         body_instrs = self.compile(body, False)
         self.instrs.extend(body_instrs)
+        body = []
 
         vone = vconst[1]
         vtwo = vconst[2]
@@ -624,7 +631,7 @@ class KernelBuilder:
         vforest_values_p = self.alloc_scratch('vforest_values_p', VLEN)
 
 
-        body = []
+        
         self.add("valu", ("vbroadcast", vforest_values_p, self.scratch['forest_values_p']))        
 
         vtree = self.alloc_scratch('vtree', VLEN*4)
@@ -817,13 +824,6 @@ class KernelBuilder:
                         body.append(("valu", ("multiply_add", tmp_node_val_v, vparity[0], tvector[1], tvector[0])))
       
                     case x if x == NORMAL_LOAD:
-                        if iterate_method == FIRST_NORMAL_ITERATE:
-                            # body.append(("valu", ("multiply_add", tmp_idx_v, vone,      vtwo, vparity[0])))
-                            # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[1])))
-                            # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[2])))
-                            # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[3])))
-                            # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[4])))
-                            pass
                         body.append(("valu", ("+", vtmp2, tmp_idx_v, vforest_values_p)))
                         for j in range(VLEN):
                             # node_val = mem[forest_values_p + idx]
@@ -899,6 +899,8 @@ class KernelBuilder:
         body_instrs = self.compile(body)
         print(f'===== before: {len(body)} after:  {len(body_instrs)}')
         self.instrs.extend(body_instrs)
+
+        self.compile_consts()
 
 
         # Required to match with the yield in reference_kernel2
