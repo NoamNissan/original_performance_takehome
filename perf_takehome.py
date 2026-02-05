@@ -17,6 +17,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 import random
 import unittest
+from operator import itemgetter, attrgetter
 
 from problem import (
     Engine,
@@ -91,6 +92,48 @@ def mergeable(a1, l1, a2, l2):
 def addresses(slot):
     return slot[1:] if slot[0] != 'load_offset' else slot[1:-1]
 
+def inst_length(e, op) -> (int, int): # wlength, rlength
+    if e in ['alu', 'debug']:
+        return 1, 1
+    if e in ['valu']:
+        if op == 'vbroadcast':
+            return 8, 1
+        return 8, 8
+
+    if e in ['store', 'load']:
+        if op == 'vload':
+            return 8, 1
+        if op == 'vstore':
+            return 1, 8
+        if op in ['store', 'load', 'load_offset', 'const']:
+            return 1, 1
+        assert False, f'unknown op {e} {op}'
+    assert False, f'unknown e {e}'
+
+def inst_addresses(e, slot):
+    wlength, rlength = inst_length(e, slot[0])
+    waddr = slot[1]
+    raddr = slot[2:] if slot[0] != 'load_offset' else slot[2:-1]
+    offset = 0
+    if slot[0] == 'load_offset':
+        offset = slot[-1]
+
+    waddr = [waddr + x for x in range(wlength)]
+    waddr = [w + offset for w in waddr]
+
+    raddr = [r+x for x in range(rlength) for r in raddr]
+    raddr = [r+offset for r in raddr]
+    return waddr, raddr
+
+def decompose(inst) -> (Engine, List[tuple]):
+        e, slot = inst
+        slots = []
+        if isinstance(slot, MultiSlot):
+            slots.extend(slot.slots)
+        elif isinstance(slot, tuple):
+            slots.append(slot)
+        return e, slots
+
 class Scratch():
     scratch: List[tuple]
     def __init__(self):
@@ -131,22 +174,7 @@ class OptimizedInstruction():
         self.read_scratch = Scratch()
 
     def inst_length(self, e, op) -> (int, int): # wlength, rlength
-        if e in ['alu', 'debug']:
-            return 1, 1
-        if e in ['valu']:
-            if op == 'vbroadcast':
-                return 8, 1
-            return 8, 8
-
-        if e in ['store', 'load']:
-            if op == 'vload':
-                return 8, 1
-            if op == 'vstore':
-                return 1, 8
-            if op in ['store', 'load', 'load_offset', 'const']:
-                return 1, 1
-            assert False, f'unknown op {e} {op}'
-        assert False, f'unknown e {e}'
+        return inst_length(e, op)
 
     def slot_overlaps(self, e, slot):
         offset = 0 if slot[0] != 'load_offset' else slot[3]
@@ -216,6 +244,87 @@ class OptimizedInstruction():
     
 ENABLED = True
 
+class TreeCompiler:
+    def __init__(self, insts, debug = False):
+        self.debug = debug
+        self.input = insts
+        self.last_written = {}
+        self.last_read = {}
+        self.ingested = []
+
+    def ingest(self, e, slot):
+        seen = [0]
+        waddr, raddr = inst_addresses(e, slot)
+        addr = waddr + list(raddr)
+        seens = [self.last_written[x] if x in self.last_written else 0 for x in addr]
+        seens += [self.last_read[w] if w in self.last_read else 0 for w in waddr]
+        level = max(seens) + 1
+        for w in waddr:
+            self.last_written[w] = level
+        for r in raddr:
+            self.last_read[r] = level
+        self.ingested.append((level, e, slot))
+
+    def compile(self):
+        stock = [decompose(i) for i in self.input]
+        for s in stock:
+            e = s[0]
+            for slot in s[1]:
+                self.ingest(e, slot)
+        self.optimize()
+
+    def optimize(self):
+        # if self.debug:
+        #     for x in self.ingested:
+        #         print(x)
+        self.ingested.sort(key=itemgetter(0,1))
+        # if self.debug:
+        #     print('===== after sort====')
+        #     for x in self.ingested:
+        #         print(x)
+        
+
+        
+
+    def build(self):
+        curr_e = ''
+        curr_slots = []
+        curr_level = -1
+        self.output = []
+        # if self.debug:
+        #     print(f'{len(self.ingested)=}')
+        for level, e, slot in self.ingested:
+            # if self.debug:
+            #     print(f'{level=} {e=} {slot=}')
+            flush = False
+            if e != curr_e or level != curr_level:
+                flush = True
+            if curr_e != '' and SLOT_LIMITS[curr_e] == len(curr_slots):
+                flush = True
+            if flush:
+                if curr_e != '':
+                    # flush
+                    self.output.append({curr_e: curr_slots})
+                # new round
+                curr_e = e
+                curr_level = level
+                curr_slots = [slot]
+                continue
+            curr_slots.append(slot)
+        self.output.append({curr_e: curr_slots})
+        if self.debug:
+            print('done compiling')
+            print('\n'.join([f'{len([i[k] for k in i][0])}: {i}' for i in self.output]))
+            # print('\n'.join([f'{i}' for i in self.output]))
+        return self.output
+
+
+
+
+
+
+
+
 class Compiler:
     def __init__(self, insts, debug = False):
         self.input = insts
@@ -225,6 +334,8 @@ class Compiler:
         self.curr['alu'] = []
         self.output = []
         self.debug = debug
+        self.last_written = {}
+        self.optimized = []
 
     def flush(self, force: bool):
         for e, v in self.curr:
@@ -236,14 +347,14 @@ class Compiler:
         if not ENABLED:
             return False, len(self.optimized)
 
-        if self.debug:
-            print(f'optimizing {slot}')
+        # if self.debug:
+        #     print(f'optimizing {slot}')
         found = False
         # iterate optimized, and find a non-coliding spot
         seen = [0]
         for a in addresses(slot):
-            if a in self.last_seen:
-                seen.append(self.last_seen[a])
+            if a in self.last_written:
+                seen.append(self.last_written[a])
         i = max(seen)
         while i < len(self.optimized) and not found:
             opz = self.optimized[i]
@@ -257,9 +368,9 @@ class Compiler:
                     nopz.add_and_register(e, slot)
                     self.optimized = self.optimized[:i] + [nopz] + self.optimized[i:]
                     found = True
-                    for addr in self.last_seen:
-                        if self.last_seen[addr] >= i:
-                            self.last_seen[addr] = self.last_seen[addr]+1
+                    for addr in self.last_written:
+                        if self.last_written[addr] >= i:
+                            self.last_written[addr] = self.last_written[addr]+1
                     break
 
             opz.register(e, slot)
@@ -268,68 +379,34 @@ class Compiler:
         return found, i
 
     def compile(self):
-        stock = [self.decompose(i) for i in self.input]
+        stock = [decompose(i) for i in self.input]
         buffer = []
-        if self.debug:
-            print('\n'.join([f'{i}' for i in stock]))
-        # stock.reverse()
-
-        self.optimized = []
-        self.last_seen = {}
+        # if self.debug:
+        #     print('\n'.join([f'{i}' for i in stock]))
+        
         for s in stock:
             e = s[0]
             for slot in s[1]:
-                if self.debug:
-                    for opz in self.optimized:
-                        print(f'{opz.e=} {opz.slots=}')
-                        print(f'\t{opz.read_scratch=}')
-                        print(f'\t{opz.written_scratch=}')
-                    print('==================')
                 # if self.debug:
-                #     print(f'optimizing {slot}')
-                # found = False
-                # # iterate optimized, and find a non-coliding spot
-                # seen = [0]
-                # for a in addresses(slot):
-                #     if a in last_seen:
-                #         seen.append(last_seen[a])
-                # i = max(seen)
-                # while i < len(self.optimized) and not found:
-                #     opz = self.optimized[i]
-                #     if opz.permitted(e, slot):
-                #         opz.add_and_register(e, slot)
-                #         found = True
-                #         break
-                #     if e == 'load' and opz.e in ['valu', 'alu']:
-                #         if not opz.slot_overlaps(e, slot):
-                #             nopz = OptimizedInstruction(e)
-                #             nopz.add_and_register(e, slot)
-                #             self.optimized = self.optimized[:i] + [nopz] + self.optimized[i:]
-                #             found = True
-                #             for addr in last_seen:
-                #                 if last_seen[addr] >= i:
-                #                     last_seen[addr] = last_seen[addr]+1
-                #             break
-
-                #     opz.register(slot)
-                    
-                #     i += 1
+                    # for opz in self.optimized:
+                    #     print(f'{opz.e=} {opz.slots=}')
+                    #     print(f'\t{opz.read_scratch=}')
+                    #     print(f'\t{opz.written_scratch=}')
+                    # print('==================')
                 found, i = self.optimize(e, slot)
                 if not found:
                     opz = OptimizedInstruction(e)
                     opz.add_and_register(e, slot)
                     self.optimized.append(opz)
-                # update last_seen
+                # update last_written
                 addr = slot[1]
-                self.last_seen[addr] = i
-                # for addr in addresses(slot):
-                #     last_seen[addr] = i
+                self.last_written[addr] = i
 
-        if self.debug:
-            for opz in self.optimized:
-                print(f'{opz.e=} {opz.slots=}')
-                print(f'\t{opz.read_scratch=}')
-                print(f'\t{opz.written_scratch=}')
+        # if self.debug:
+            # for opz in self.optimized:
+            #     print(f'{opz.e=} {opz.slots=}')
+            #     print(f'\t{opz.read_scratch=}')
+            #     print(f'\t{opz.written_scratch=}')
         self.output.extend([opz.build() for opz in self.optimized])
 
         if self.debug:
@@ -442,7 +519,15 @@ class KernelBuilder:
         compiler = Compiler(insts, debug = debug)
         compiler.compile()
         output = compiler.build()
-        print(f'===== {tag}: before: {len(insts)} after:  {len(output)}')
+        # print(f'===== {tag}: before: {len(insts)} after:  {len(output)}')
+        return output
+
+    def compile_tree(self, insts, tag, debug = False):
+        t = TreeCompiler(insts, debug)
+        t.compile()
+        output = t.build()
+        
+        # print(f'===== {tag}: before: {len(insts)} after:  {len(output)}')
         return output
             
 
@@ -504,8 +589,7 @@ class KernelBuilder:
 
             if hi in [0,2,4]:
                 const3 = self.alloc_scratch(f'hash_vfconst_{hi}', VLEN)
-                slots.append(("valu", ("vbroadcast", const3, self.scratch_const(1<<val3))))
-                slots.append(("valu", ("+", const3, const3, vone)))
+                slots.append(("valu", ("vbroadcast", const3, self.scratch_const((1<<val3)+1))))
             else:
                 const3 = self.alloc_scratch(f'hash_val3_{hi}', VLEN)
                 slots.append(("valu", ("vbroadcast", const3, self.scratch_const(val3))))
@@ -679,11 +763,10 @@ class KernelBuilder:
             body.append(("alu", ("+", value_ptr, self.scratch["inp_values_p"], i_const)))
             body.append(("load",("vload", tmp_val_v, value_ptr)))
 
-        body_instrs = self.compile(body, tag = 'LOAD')
-        self.instrs.extend(body_instrs)
-        # body_instrs = self.build_compress(body, batch_size, 1)
-        # # body_instrs = self.compile(body)
+        # body_instrs = self.compile(body, tag = 'LOAD')
+        # # body_instrs = self.compile_tree(body, debug=False, tag = 'LOAD')
         # self.instrs.extend(body_instrs)
+        # body = []  # array of slots
 
         # tmp_node_val_v initiation method
         BROADCAST_ZERO = 0
@@ -720,7 +803,7 @@ class KernelBuilder:
         }
 
         # round_num = -1
-        body = []  # array of slots
+        
         for vbatch_i in range(0, batch_size, VLEN):
             for round in range(rounds):
                 if round in STAGES_DICT:
@@ -854,18 +937,23 @@ class KernelBuilder:
                     case x if x == AFTER_WRAPAROUND:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
 
-            # if mb_num == 5 or vbatch == 31:
-            #     debug = False
-            #     if vbatch == 11:
-            #         debug = True
-            #     # here we are compiling every vbatch on entire rounds
-        debug = False
-        body_instrs = self.compile(body, tag = 'COMPUTE', debug=debug)
-        self.instrs.extend(body_instrs)
-        body = []
+           
 
+                # debug = True
+                # body_instrs = self.compile_tree(body, tag = 'COMPUTE', debug=debug)
+                # body_instrs = self.compile(body, tag = 'COMPUTE', debug=debug)
+                # self.instrs.extend(body_instrs)
+                # print(f'{round=} {vbatch=} before={len(body)} after={len(body_instrs)} ratio={len(body)/len(body_instrs)}')
+                # body = []
+                
+        # compile everything together
+        # debug = False
+        # # body_instrs = self.compile_tree(body, tag = 'COMPUTE', debug=debug)
+        # body_instrs = self.compile(body, tag = 'COMPUTE', debug=debug)
+        # # print(f'{round=} {vbatch=} before={len(body)} after={len(body_instrs)} ratio={len(body)/len(body_instrs)}')
+        # self.instrs.extend(body_instrs)
+        # body = []
 
-        body = []
         for i in range(0, batch_size, VLEN):
             vbatch = int(i/VLEN)
             mb_num = vbatch % self.mb_size
@@ -890,7 +978,7 @@ class KernelBuilder:
             body.append(("store", ("vstore", value_ptr, tmp_val_v)))
 
 
-        body_instrs = self.compile(body, tag = 'STORE')
+        body_instrs = self.compile_tree(body,debug=True, tag = 'STORE')
         self.instrs.extend(body_instrs)
 
         self.compile_consts()
