@@ -869,10 +869,10 @@ class KernelBuilder:
                         body.append(("valu", ("multiply_add", tmp_node_val_v, vparity[0], tvector[1], tvector[0])))
       
                         # compute tmp_idx_v for the first time in this vbatch
-                        body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[0])))
-                        body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[1])))
-                        body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[2])))
-                        body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[3])))
+                        # body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[0])))
+                        # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[1])))
+                        # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[2])))
+                        # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[3])))
                         
                     case x if x == NORMAL_LOAD:
                         # if iterate_method == FIRST_NORMAL_ITERATE:
@@ -898,10 +898,10 @@ class KernelBuilder:
                 match iterate_method:
                     case x if x == FIRST_ITERATION:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
-                        # body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[tlevel])))
+                        body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[tlevel])))
                     case x if x == PARITY_AWARE:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
-                        # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
+                        body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
 
                     case x if x == FIRST_NORMAL_ITERATE:
                         body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
