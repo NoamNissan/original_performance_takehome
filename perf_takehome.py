@@ -35,10 +35,6 @@ from problem import (
     reference_kernel2,
 )
 
-@dataclass
-class MultiSlot:
-    slots: List[tuple]
-
 class Buffer:
     e: str
     slots: List[tuple]
@@ -128,10 +124,8 @@ def inst_addresses(e, slot):
 def decompose(inst) -> (Engine, List[tuple]):
         e, slot = inst
         slots = []
-        if isinstance(slot, MultiSlot):
-            slots.extend(slot.slots)
         if isinstance(slot, list):
-            slots.extent(*slot)
+            slots.extend(slot)
         elif isinstance(slot, tuple):
             slots.append(slot)
         return e, slots
@@ -426,20 +420,7 @@ class KernelBuilder:
         instrs = []
         for engine, slot in slots:
             instrs.append({engine: [slot]})
-        return instrs
-
-    def build_multi(self, slots: list[tuple[Engine, any]], vliw: bool = False):
-        instrs = []
-        for engine, slot in slots:
-            if isinstance(slot, MultiSlot):
-                instrs.append({engine: slot.slots})
-            elif isinstance(slot, tuple):
-                instrs.append({engine: [slot]})
-            else:
-                raise Exception(f"Unrecognised type {type(slot)}")
-        return instrs
-
-    
+        return instrs    
 
     def combine_insts(self, insts: list[dict[Engine, tuple]]):
         engines = [k for k,_ in insts]
@@ -496,10 +477,6 @@ class KernelBuilder:
         return insts
 
     def compile(self, insts, tag, debug = False):
-        # t = TreeCompiler(insts, debug)
-        # t.compile()
-        # insts = [(e, MultiSlot(slots=slots)) for e,slots in  t.output]
-
         compiler = Compiler(insts, debug = debug)
         compiler.compile()
         output = compiler.build()
@@ -515,9 +492,9 @@ class KernelBuilder:
         return output
     
     def compile_combined(self, insts, tag, debug = False):
-        t = TreeCompiler(insts, debug)
+        t = TreeCompiler(insts, debug=False)
         t.compile()
-        insts = [(e, MultiSlot(slots=slots)) for e,slots in  t.output]
+        insts = t.output
 
         compiler = Compiler(insts, debug = debug)
         compiler.compile()
@@ -568,7 +545,7 @@ class KernelBuilder:
         slots = []
 
         for hi, (op1, val1, op2, op3, val3) in enumerate(HASH_STAGES):
-            slots.append(("alu", MultiSlot(slots=((op1, tmp1, val_hash_addr, self.scratch_const(val1)),(op3, tmp2, val_hash_addr, self.scratch_const(val3))))))
+            slots.append(("alu", [(op1, tmp1, val_hash_addr, self.scratch_const(val1)),(op3, tmp2, val_hash_addr, self.scratch_const(val3))]))
             slots.append(("alu", (op2, val_hash_addr, tmp1, tmp2)))
 
         return slots
@@ -830,14 +807,12 @@ class KernelBuilder:
                     case x if x == LOAD_ONE:
                         body.append(("valu", ("multiply_add", tmp_node_val_v, vparity[0], vf[2], vf[1])))
                     case x if x == LOAD_TWO:
-                        body.append(("valu", MultiSlot(slots=(
+                        body.append(("valu", [
                                 ("multiply_add", tmp_node_val_v, vparity[1], vf[4], vf[3]),
                                 ("multiply_add", vtmp2,          vparity[1], vf[6], vf[5]),
-                            ))))
+                            ]))
 
-                        body.append(("valu", MultiSlot(slots=(
-                                ("-", vtmp2, vtmp2, tmp_node_val_v),
-                            ))))
+                        body.append(("valu", ("-", vtmp2, vtmp2, tmp_node_val_v)))
 
                         body.append(("valu", ("multiply_add", tmp_node_val_v, vparity[0], vtmp2, tmp_node_val_v)))
 
@@ -848,17 +823,17 @@ class KernelBuilder:
                         slots = []
                         for i in range(4):
                             slots.append(("multiply_add", tvector[i], vparity[2], vf[base+i*2+1], vf[base+i*2]))
-                        body.append(("valu", MultiSlot(slots=slots)))
+                        body.append(("valu", slots))
 
                         slots = []
                         for i in range(2):
                             slots.append(("-", tvector[i*2+1], tvector[i*2+1], tvector[i*2]))
-                        body.append(("valu", MultiSlot(slots=slots)))
+                        body.append(("valu", slots))
 
                         slots = []
                         for i in range(2):
                             slots.append(("multiply_add", tvector[i*2+1], vparity[1], tvector[i*2+1], tvector[i*2]))
-                        body.append(("valu", MultiSlot(slots=slots)))
+                        body.append(("valu", slots))
 
                         tvector = [vtmp2, vtmp4]
                         body.append(("valu", ("-", tvector[1], tvector[1], tvector[0])))
@@ -873,16 +848,16 @@ class KernelBuilder:
 
                             for i in range(4):
                                 slots.append(("multiply_add", tvector[i], vparity[3], vf[base+i*2+1], vf[base+i*2]))
-                            body.append(("valu", MultiSlot(slots=slots)))
+                            body.append(("valu", slots))
 
                             slots = []
                             for i in range(2):
                                 slots.append(("-", tvector[i*2+1], tvector[i*2+1], tvector[i*2]))
-                            body.append(("valu", MultiSlot(slots=slots)))
+                            body.append(("valu", slots))
                             slots = []
                             for i in range(2):
                                 slots.append(("multiply_add", tvector[i*2+1], vparity[2], tvector[i*2+1], tvector[i*2]))
-                            body.append(("valu", MultiSlot(slots=slots)))
+                            body.append(("valu", slots))
 
                             tvector = [vtmp3, vtmp5]
 
@@ -960,7 +935,7 @@ class KernelBuilder:
                 # body = []
                 
         # compile everything together
-        debug = True
+        debug = False
         # body_instrs = self.compile_tree(body, tag = 'COMPUTE', debug=debug)
         body_instrs = self.compile_combined(body, tag = 'COMPUTE', debug=debug)
         # print(f'{round=} {vbatch=} before={len(body)} after={len(body_instrs)} ratio={len(body)/len(body_instrs)}')
@@ -981,7 +956,7 @@ class KernelBuilder:
             # one last -1
             # body.append(("valu", ("-", tmp_idx_v, tmp_idx_v, vone)))
 
-            i_const = self.scratch_const(i)
+            # i_const = self.scratch_const(i)
             # mem[inp_indices_p + i] = idx
             # mem[inp_values_p + i] = val
 
