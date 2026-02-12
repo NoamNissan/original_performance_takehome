@@ -700,7 +700,9 @@ class KernelBuilder:
 
         NUM_STORED_VF = 2**5-1
 
-        # for i in range(1, VLEN*4):
+        # print(f'{hex(HASH_STAGES[5][1])=}')
+
+        # for i in range(1, NUM_STORED_VF):
         #     body.append(("alu", ("^", vtree+i, vtree+i, self.scratch_const(HASH_STAGES[5][1]))))
 
         vf = [self.alloc_scratch(f'vf{i}', VLEN) for i in range(NUM_STORED_VF)]
@@ -713,7 +715,9 @@ class KernelBuilder:
         for i in range(2, NUM_STORED_VF, 2):
             body.append(("valu", ("-", vf[i-1], vf[i-1], vf[i])))
 
-
+        xor = self.scratch_const(0b11110)
+        vxor = self.alloc_scratch('vxor', VLEN)
+        body.append(("valu", ("vbroadcast", vxor, xor)))
 
 
         # The need to decrease here is because we are managing tmp_idx_v as 1-base instead of 0-base
@@ -920,9 +924,8 @@ class KernelBuilder:
                         body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
 
-                        xor = self.scratch_const(0b11110)
-                        body.append(("valu", ("vbroadcast", vtmp1, xor)))
-                        body.append(("valu", ("^", tmp_idx_v, tmp_idx_v, vtmp1)))
+                        # Fix the mess we did by skipping the last hash
+                        body.append(("valu", ("^", tmp_idx_v, tmp_idx_v, vxor)))
                     case x if x == NORMAL_ITERATE:
                         body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
@@ -1102,7 +1105,7 @@ class Tests(unittest.TestCase):
     #             )
 
     def test_kernel_cycles(self):
-        # do_kernel_test(10, 16, 16, trace=False, prints=True)
+        # do_kernel_test(10, 1, 16, trace=False, prints=True)
         # do_kernel_test(10, 6, 32, trace=False, prints=False)
         # do_kernel_test(1, 16, 240, trace=False, prints=False)
         do_kernel_test(10, 16, 256, trace=False, prints=False)
