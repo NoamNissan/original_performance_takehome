@@ -625,9 +625,20 @@ class KernelBuilder:
         Like reference_kernel2 but building actual instructions.
         Scalar implementation using only scalar ALU and load/store.
         """
-        tmp1 = self.alloc_scratch("tmp1")
-        # tmp2 = self.alloc_scratch("tmp2")
-        # tmp3 = self.alloc_scratch("tmp3")
+
+
+        # Pause instructions are matched up with yield statements in the reference
+        # kernel to let you debug at intermediate steps. The testing harness in this
+        # file requires these match up to the reference kernel's yields, but the
+        # submission harness ignores them.
+        self.add("flow", ("pause",))
+        # Any debug engine instruction is ignored by the submission simulator
+        self.add("debug", ("comment", "Starting loop"))
+
+
+
+        body = []
+       
         # Scratch space addresses
         init_vars = [
             "rounds",
@@ -641,26 +652,14 @@ class KernelBuilder:
         for v in init_vars:
             self.alloc_scratch(v, 1)
         for i, v in enumerate(init_vars):
-            self.add("load", ("const", tmp1, i))
-            self.add("load", ("load", self.scratch[v], tmp1))
-
-        zero_const = self.scratch_const(0)
-        one_const = self.scratch_const(1)
-        two_const = self.scratch_const(2)
-
-        # Pause instructions are matched up with yield statements in the reference
-        # kernel to let you debug at intermediate steps. The testing harness in this
-        # file requires these match up to the reference kernel's yields, but the
-        # submission harness ignores them.
-        self.add("flow", ("pause",))
-        # Any debug engine instruction is ignored by the submission simulator
-        self.add("debug", ("comment", "Starting loop"))
+            t = self.scratch_const(i)
+            body.append(("load", ("load", self.scratch[v], t)))
 
         CONSTS = 4
         VCONSTS = 3
-        const_int = [zero_const, one_const, two_const] + [self.scratch_const(i) for i in range(3,CONSTS)]
+        const_int =  [self.scratch_const(i) for i in range(CONSTS)]
         vconst = [self.alloc_scratch(f'vconst{i}', VLEN) for i in range(VCONSTS)]
-        body = []
+
         for i in range(VCONSTS):
             body.append(("valu", ("vbroadcast", vconst[i], const_int[i])))
         # body_instrs = self.compile(body, tag = 'CONST VARIABLES')
@@ -716,13 +715,11 @@ class KernelBuilder:
         for i in range(NUM_STORED_VF):
             body.append(("valu", ("vbroadcast", vf[i], vtree+i)))
         
-        # for i in range(1, NUM_STORED_VF):
-        #     body.append(("valu", ("^", vf[i], vf[i], self.hash_consts[5][0])))
-
         for i in range(2, NUM_STORED_VF, 2):
             body.append(("valu", ("-", vf[i-1], vf[i-1], vf[i])))
 
-        xor = self.scratch_const(0b11110)
+        # This value is the result of the rounds in which we calculate the last xor after calculating parity
+        xor = self.scratch_const(0b1111)
         vxor = self.alloc_scratch('vxor', VLEN)
         body.append(("valu", ("vbroadcast", vxor, xor)))
 
@@ -919,12 +916,13 @@ class KernelBuilder:
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
 
                     case x if x == FIRST_NORMAL_ITERATE:
+                        # Fix the mess we did by skipping the last hash
+                        body.append(("valu", ("^", tmp_idx_v, tmp_idx_v, vxor)))
 
                         body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
 
-                        # Fix the mess we did by skipping the last hash
-                        body.append(("valu", ("^", tmp_idx_v, tmp_idx_v, vxor)))
+                        
                     case x if x == NORMAL_ITERATE:
                         body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
@@ -981,7 +979,7 @@ class KernelBuilder:
             body.append(("store", ("vstore", value_ptr, tmp_val_v)))
 
 
-        body_instrs = self.compile(body,debug=False, tag = 'STORE')
+        body_instrs = self.compile_combined(body, debug=False, tag = 'STORE')
         self.instrs.extend(body_instrs)
 
         self.compile_consts()
@@ -1098,7 +1096,7 @@ class Tests(unittest.TestCase):
 
     def test_kernel_cycles(self):
         # do_kernel_test(10, 1, 16, trace=False, prints=True)
-        # do_kernel_test(10, 6, 32, trace=False, prints=False)
+        # do_kernel_test(10, 10, 32, trace=False, prints=False)
         # do_kernel_test(1, 16, 240, trace=False, prints=False)
         do_kernel_test(10, 16, 256, trace=False, prints=False)
 
