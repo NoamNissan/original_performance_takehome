@@ -652,6 +652,8 @@ class KernelBuilder:
         for v in init_vars:
             self.alloc_scratch(v, 1)
         for i, v in enumerate(init_vars):
+            if v in ['rounds', 'n_nodes', 'batch_size', 'forest_height']:
+                continue
             t = self.scratch_const(i)
             body.append(("load", ("load", self.scratch[v], t)))
 
@@ -662,9 +664,6 @@ class KernelBuilder:
 
         for i in range(VCONSTS):
             body.append(("valu", ("vbroadcast", vconst[i], const_int[i])))
-        # body_instrs = self.compile(body, tag = 'CONST VARIABLES')
-        # self.instrs.extend(body_instrs)
-        # body = []
 
         vone = vconst[1]
         vtwo = vconst[2]
@@ -702,9 +701,6 @@ class KernelBuilder:
         for i in range(4):
             body.append(("load", ("vload", vtree+i*VLEN, arr_vtmp2[i])))
 
-        # body_instrs = self.compile(body,debug=True, tag = 'BEFORE TREE')
-        # self.instrs.extend(body_instrs)
-        # body = []
 
         NUM_STORED_VF = 2**5-1
 
@@ -727,11 +723,6 @@ class KernelBuilder:
         # The need to decrease here is because we are managing tmp_idx_v as 1-base instead of 0-base
         body.append(("valu", ("-", vforest_values_p, vforest_values_p, vone)))
 
-
-        # body_instrs = self.compile_combined(body, debug=True, tag = 'VARIABLES')
-        # self.instrs.extend(body_instrs)
-        # body = []
-
         assert batch_size % VLEN == 0
 
         
@@ -749,11 +740,6 @@ class KernelBuilder:
             i_const = self.scratch_const(i)
             body.append(("alu", ("+", value_ptr, self.scratch["inp_values_p"], i_const)))
             body.append(("load",("vload", tmp_val_v, value_ptr)))
-
-        # body_instrs = self.compile_combined(body,debug=True, tag = 'LOAD')
-        body_instrs = self.compile(body, debug=False, tag = 'LOAD')
-        self.instrs.extend(body_instrs)
-        body = []  # array of slots
 
         BROADCAST_ZERO = 0
         LOAD_ONE = 1
@@ -882,12 +868,6 @@ class KernelBuilder:
                         body.append(("valu", ("-", tvector[0], tvector[0], tvector[1])))
                         body.append(("valu", ("multiply_add", tmp_node_val_v, vparity[0], tvector[0], tvector[1])))
       
-                        # compute tmp_idx_v for the first time in this vbatch
-                        # body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[0])))
-                        # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[1])))
-                        # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[2])))
-                        # body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[3])))
-                        
                     case x if x == NORMAL_LOAD:
                         body.append(("valu", ("+", vtmp2, tmp_idx_v, vforest_values_p)))
                         for j in range(VLEN):
@@ -904,8 +884,6 @@ class KernelBuilder:
 
                 if iterate_method in [FIRST_NORMAL_ITERATE, NORMAL_ITERATE, WRAPAROUND]:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, self.hash_consts[5][0])))
-                
-                self.add("debug", ("comment", "Vhash finished"))
 
                 match iterate_method:
                     case x if x == FIRST_ITERATION:
@@ -937,10 +915,6 @@ class KernelBuilder:
                     case x if x == LAST_ITERATION:
                         pass
 
-                
-
-
-
         for vbatch_i in range(0, batch_size, VLEN):
             tmp_val_v = mega_val_v[vbatch]
             vbatch = int(vbatch_i/VLEN)
@@ -949,9 +923,7 @@ class KernelBuilder:
                 
         # compile everything together
         debug = False
-        # body_instrs = self.compile_tree(body, tag = 'COMPUTE', debug=debug)
         body_instrs = self.compile_combined(body, tag = 'COMPUTE', debug=debug)
-        # print(f'{round=} {vbatch=} before={len(body)} after={len(body_instrs)} ratio={len(body)/len(body_instrs)}')
         self.instrs.extend(body_instrs)
         body = []
 
@@ -975,7 +947,6 @@ class KernelBuilder:
                 i_const = self.scratch_const(i)
                 body.append(("alu", ("+", vtmp3, self.scratch["inp_indices_p"], i_const)))
                 body.append(("store", ("vstore", vtmp3, tmp_idx_v)))
-            # body.append(("alu", ("+", vtmp2, self.scratch["inp_values_p"], i_const)))
             body.append(("store", ("vstore", value_ptr, tmp_val_v)))
 
 
@@ -996,7 +967,6 @@ class KernelBuilder:
                 if e == 'debug':
                     continue
                 if len(slots) < SLOT_LIMITS[e] and e != 'debug':
-                    # print(f'{e=} {slots=}, {len(slots)=} {SLOT_LIMITS[e]=}')
                     gap += SLOT_LIMITS[e] - len(slots)
                 used  += len(slots)
                 total += SLOT_LIMITS[e]
@@ -1024,7 +994,6 @@ def do_kernel_test(
 
     kb = KernelBuilder()
     kb.build_kernel(forest.height, len(forest.values), len(inp.indices), rounds)
-    # print(kb.instrs)
 
     value_trace = {}
     machine = Machine(
