@@ -331,8 +331,8 @@ class Compiler:
         if not ENABLED:
             return False, len(self.optimized)
 
-        # if self.debug:
-        #     print(f'optimizing {slot}')
+        if self.debug:
+            print(f'optimizing {slot=}')
         found = False
         # iterate optimized, and find a non-coliding spot
         seen = [0]
@@ -362,6 +362,13 @@ class Compiler:
             i += 1
         return found, i
 
+    def update_last_written(self, e, slot, i):
+        addr = slot[1]
+        wlength, rlength = inst_length(e, slot[0])
+        for j in range(wlength):
+            self.last_written[addr+j] = i
+
+
     def compile(self):
         stock = [decompose(i) for i in self.input]
         buffer = []
@@ -371,26 +378,25 @@ class Compiler:
         for s in stock:
             e = s[0]
             for slot in s[1]:
-                # if self.debug:
-                    # for opz in self.optimized:
-                    #     print(f'{opz.e=} {opz.slots=}')
-                    #     print(f'\t{opz.read_scratch=}')
-                    #     print(f'\t{opz.written_scratch=}')
-                    # print('==================')
+                if self.debug:
+                    for opz in self.optimized:
+                        print(f'{opz.e=} {opz.slots=}')
+                        print(f'\t{opz.read_scratch=}')
+                        print(f'\t{opz.written_scratch=}')
+                    print('==================')
                 found, i = self.optimize(e, slot)
                 if not found:
                     opz = OptimizedInstruction(e)
                     opz.add_and_register(e, slot)
                     self.optimized.append(opz)
                 # update last_written
-                addr = slot[1]
-                self.last_written[addr] = i
+                self.update_last_written(e, slot, i)
 
-        # if self.debug:
-            # for opz in self.optimized:
-            #     print(f'{opz.e=} {opz.slots=}')
-            #     print(f'\t{opz.read_scratch=}')
-            #     print(f'\t{opz.written_scratch=}')
+        if self.debug:
+            for opz in self.optimized:
+                print(f'{opz.e=} {opz.slots=}')
+                print(f'\t{opz.read_scratch=}')
+                print(f'\t{opz.written_scratch=}')
         self.output.extend([opz.build() for opz in self.optimized])
 
         if self.debug:
@@ -555,7 +561,6 @@ class KernelBuilder:
         self.hash_factor = {}
         slots = []
         for hi, (op1, val1, op2, op3, val3) in enumerate(HASH_STAGES):
-            print(f'{hi=} {op1=} {hex(val1)=} {op2=}')
             const1 = self.alloc_scratch(f'hash_val1_{hi}', VLEN)
             slots.append(("valu", ("vbroadcast", const1, self.scratch_const(val1))))
 
@@ -658,9 +663,9 @@ class KernelBuilder:
         body = []
         for i in range(VCONSTS):
             body.append(("valu", ("vbroadcast", vconst[i], const_int[i])))
-        body_instrs = self.compile(body, tag = 'CONST VARIABLES')
-        self.instrs.extend(body_instrs)
-        body = []
+        # body_instrs = self.compile(body, tag = 'CONST VARIABLES')
+        # self.instrs.extend(body_instrs)
+        # body = []
 
         vone = vconst[1]
         vtwo = vconst[2]
@@ -687,7 +692,7 @@ class KernelBuilder:
         body.extend(self.init_hash(vone))
 
         vforest_values_p = self.alloc_scratch('vforest_values_p', VLEN)
-        self.add("valu", ("vbroadcast", vforest_values_p, self.scratch['forest_values_p']))        
+        body.append(("valu", ("vbroadcast", vforest_values_p, self.scratch['forest_values_p'])))        
 
         vtree = self.alloc_scratch('vtree', VLEN*4)
         ptr = arr_vtmp2[0]
@@ -698,19 +703,21 @@ class KernelBuilder:
         for i in range(4):
             body.append(("load", ("vload", vtree+i*VLEN, arr_vtmp2[i])))
 
+        # body_instrs = self.compile(body,debug=True, tag = 'BEFORE TREE')
+        # self.instrs.extend(body_instrs)
+        # body = []
+
         NUM_STORED_VF = 2**5-1
 
-        # print(f'{hex(HASH_STAGES[5][1])=}')
-
-        # for i in range(1, NUM_STORED_VF):
-        #     body.append(("alu", ("^", vtree+i, vtree+i, self.scratch_const(HASH_STAGES[5][1]))))
+        for i in range(1, NUM_STORED_VF):
+            body.append(("alu", ("^", vtree+i, vtree+i, self.scratch_const(HASH_STAGES[5][1]))))
 
         vf = [self.alloc_scratch(f'vf{i}', VLEN) for i in range(NUM_STORED_VF)]
         for i in range(NUM_STORED_VF):
             body.append(("valu", ("vbroadcast", vf[i], vtree+i)))
         
-        for i in range(1, NUM_STORED_VF):
-            body.append(("valu", ("^", vf[i], vf[i], self.hash_consts[5][0])))
+        # for i in range(1, NUM_STORED_VF):
+        #     body.append(("valu", ("^", vf[i], vf[i], self.hash_consts[5][0])))
 
         for i in range(2, NUM_STORED_VF, 2):
             body.append(("valu", ("-", vf[i-1], vf[i-1], vf[i])))
@@ -721,15 +728,10 @@ class KernelBuilder:
 
 
         # The need to decrease here is because we are managing tmp_idx_v as 1-base instead of 0-base
-        #TODO: This is not right after the vbroadcast of vforest_values_p to avoid an optimization bug
         body.append(("valu", ("-", vforest_values_p, vforest_values_p, vone)))
 
-        
 
-        # body.append(("valu", ("^", vf[1], vf[1], self.hash_consts[5][0])))
-        # body.append(("valu", ("^", vf[2], vf[2], self.hash_consts[5][0])))
-
-        # body_instrs = self.compile(body, tag = 'VARIABLES')
+        # body_instrs = self.compile_combined(body, debug=True, tag = 'VARIABLES')
         # self.instrs.extend(body_instrs)
         # body = []
 
@@ -756,7 +758,6 @@ class KernelBuilder:
         self.instrs.extend(body_instrs)
         body = []  # array of slots
 
-        # tmp_node_val_v initiation method
         BROADCAST_ZERO = 0
         LOAD_ONE = 1
         LOAD_TWO = 2
@@ -900,8 +901,6 @@ class KernelBuilder:
                 # val = myhash(val ^ node_val)
                 if load_method == BROADCAST_ZERO:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, vf[0])))
-                # elif load_method == LOAD_ONE:
-                #     pass
                 else:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
                 body.extend(self.build_vhash(tmp_val_v, vtmp3, vtmp2, round, i))
@@ -968,20 +967,13 @@ class KernelBuilder:
             tmp_idx_v = mega_idx_v[vbatch]
             tmp_val_v = mega_val_v[vbatch]
             value_ptr = value_ptr_v[vbatch]
-
-
-
-            # one last -1
-            if PRESERVE_IDX:
-                # xor = self.scratch_const(0b1)
-                # body.append(("valu", ("vbroadcast", vtmp3, xor)))
-                # body.append(("valu", ("^", tmp_idx_v, tmp_idx_v, vtmp3)))
-                body.append(("valu", ("-", tmp_idx_v, tmp_idx_v, vone)))
+ 
 
             # mem[inp_indices_p + i] = idx
             # mem[inp_values_p + i] = val
-
             if PRESERVE_IDX:
+                # one last -1
+                body.append(("valu", ("-", tmp_idx_v, tmp_idx_v, vone)))
                 i_const = self.scratch_const(i)
                 body.append(("alu", ("+", vtmp3, self.scratch["inp_indices_p"], i_const)))
                 body.append(("store", ("vstore", vtmp3, tmp_idx_v)))
