@@ -738,7 +738,7 @@ class KernelBuilder:
         
         for i in range(0, batch_size, VLEN):
             vbatch = int(i/VLEN)
-            mb_num = vbatch % 6
+            mb_num = vbatch % self.mb_size
 
             tmp_val_v = mega_val_v[vbatch]
             value_ptr = value_ptr_v[vbatch]
@@ -942,7 +942,7 @@ class KernelBuilder:
 
         for i in range(0, batch_size, VLEN):
             vbatch = int(i/VLEN)
-            mb_num = vbatch % 6
+            mb_num = vbatch % self.mb_size
 
             vtmp3 = arr_vtmp3[mb_num]
             vtmp2 = arr_vtmp2[mb_num]
