@@ -96,6 +96,10 @@ def inst_length(e, op) -> (int, int): # wlength, rlength
             return 8, 1
         return 8, 8
 
+    if e in ['flow']:
+        if op == 'vselect':
+            return 8,8
+
     if e in ['store', 'load']:
         if op == 'vload':
             return 8, 1
@@ -103,8 +107,8 @@ def inst_length(e, op) -> (int, int): # wlength, rlength
             return 1, 8
         if op in ['store', 'load', 'load_offset', 'const']:
             return 1, 1
-        assert False, f'unknown op {e} {op}'
-    assert False, f'unknown e {e}'
+        assert False, f'unknown op {e=} {op=}'
+    assert False, f'unknown e {e=} {op=}'
 
 def inst_addresses(e, slot):
     wlength, rlength = inst_length(e, slot[0])
@@ -564,7 +568,9 @@ class KernelBuilder:
             const1 = self.alloc_scratch(f'hash_val1_{hi}', VLEN)
             slots.append(("valu", ("vbroadcast", const1, self.scratch_const(val1))))
 
-            if hi in [0,2,4]:
+            if hi == 4:
+                const3 = self.hash_consts[3][1]
+            elif hi in [0,2]:
                 const3 = self.alloc_scratch(f'hash_vfconst_{hi}', VLEN)
                 slots.append(("valu", ("vbroadcast", const3, self.scratch_const((1<<val3)+1))))
             else:
@@ -660,15 +666,9 @@ class KernelBuilder:
         CONSTS = 4
         VCONSTS = 3
         const_int =  [self.scratch_const(i) for i in range(CONSTS)]
-        vconst = [self.alloc_scratch(f'vconst{i}', VLEN) for i in range(VCONSTS)]
+        vconst = [None, None] + [self.alloc_scratch(f'vconst{i}', VLEN) for i in [2]]
 
-        for i in range(VCONSTS):
-            body.append(("valu", ("vbroadcast", vconst[i], const_int[i])))
-
-        vone = vconst[1]
-        vtwo = vconst[2]
-
-        self.mb_size = 7
+        self.mb_size = 8
         vbatch_size = int(batch_size/VLEN)
 
         # Vector scratch registers
@@ -681,11 +681,21 @@ class KernelBuilder:
         arr_vtmp4 = [self.alloc_scratch(f'vtmp4_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp5 = [self.alloc_scratch(f'vtmp5_{i}', VLEN) for i in range(self.mb_size)]
 
+        PRESERVE_IDX = False
+        if PRESERVE_IDX:
+            vone = vconst[1]
+        else:
+            vone = arr_vtmp5[0]
+        vtwo = vconst[2]
+        body.append(("valu", ("vbroadcast", vone, const_int[1])))
+        body.append(("valu", ("vbroadcast", vtwo, const_int[2])))
+
         arr_tmp_node_val_v  = [self.alloc_scratch(f'tmp_node_val_v_{i}', VLEN) for i in range(self.mb_size)]
 
         mega_idx_v = [self.alloc_scratch(f'mega_idx_v_{i}', VLEN) for i in range(vbatch_size)]
         mega_val_v = [self.alloc_scratch(f'mega_val_v_{i}', VLEN) for i in range(vbatch_size)]
-        value_ptr_v  = [self.alloc_scratch(f'value_ptr_{i}') for i in range(vbatch_size)]
+        # value_ptr_v  = [self.alloc_scratch(f'value_ptr_{i}') for i in range(vbatch_size)]
+        value_ptr_v = [0 for _ in range(vbatch_size)]
 
         body.extend(self.init_hash(vone))
 
@@ -696,10 +706,10 @@ class KernelBuilder:
         ptr = arr_vtmp2[0]
         for i in range(4):
             body.append(("alu", ("<<", arr_vtmp2[i], const_int[i], const_int[3])))
-            body.append(("alu", ("+",  arr_vtmp2[i], arr_vtmp2[i], self.scratch['forest_values_p'])))
+            body.append(("alu", ("+",  arr_vtmp3[i], arr_vtmp2[i], self.scratch['forest_values_p'])))
 
         for i in range(4):
-            body.append(("load", ("vload", vtree+i*VLEN, arr_vtmp2[i])))
+            body.append(("load", ("vload", vtree+i*VLEN, arr_vtmp3[i])))
 
 
         NUM_STORED_VF = 2**5-1
@@ -728,18 +738,19 @@ class KernelBuilder:
         
         for i in range(0, batch_size, VLEN):
             vbatch = int(i/VLEN)
-            # mb_num = vbatch % self.mb_size
+            mb_num = vbatch % 6
 
             tmp_val_v = mega_val_v[vbatch]
             value_ptr = value_ptr_v[vbatch]
+            vtmp2 = arr_vtmp2[mb_num]
 
 
             # idx = mem[inp_indices_p + i]
             # val = mem[inp_values_p + i]
             # No need to initialize tmp_idx_v because it is zeros in the first place
             i_const = self.scratch_const(i)
-            body.append(("alu", ("+", value_ptr, self.scratch["inp_values_p"], i_const)))
-            body.append(("load",("vload", tmp_val_v, value_ptr)))
+            body.append(("alu", ("+", vtmp2, self.scratch["inp_values_p"], i_const)))
+            body.append(("load",("vload", tmp_val_v, vtmp2)))
 
         BROADCAST_ZERO = 0
         LOAD_ONE = 1
@@ -772,8 +783,6 @@ class KernelBuilder:
             14: [LOAD_THREE,    AFTER_WRAPAROUND],
             15: [LOAD_FOUR,     LAST_ITERATION],
         }
-
-        PRESERVE_IDX = False
 
         for vbatch_i in range(0, batch_size, VLEN):
             for round in range(rounds):
@@ -841,9 +850,13 @@ class KernelBuilder:
 
                     case x if x == LOAD_FOUR:
                         outputs = [tmp_node_val_v, vtmp2]
+                        tvectors = [
+                            [vtmp2, vtmp3, vtmp4, tmp_node_val_v],
+                            [vtmp2, vtmp3, vtmp4, vtmp5]
+                        ]
                         for offset in range(2):
                             base = 15+offset*8
-                            tvector = [vtmp2, vtmp3, vtmp4, vtmp5]
+                            tvector = tvectors[offset]
                             slots = []
 
                             for i in range(4):
@@ -859,7 +872,7 @@ class KernelBuilder:
                                 slots.append(("multiply_add", tvector[i*2], vparity[2], tvector[i*2], tvector[i*2+1]))
                             body.append(("valu", slots))
 
-                            tvector = [vtmp2, vtmp4]
+                            tvector = [tvector[0], tvector[2]]
 
                             body.append(("valu", ("-", tvector[0], tvector[0], tvector[1])))
                             body.append(("valu", ("multiply_add", outputs[offset], vparity[1], tvector[0], tvector[1])))
@@ -888,7 +901,7 @@ class KernelBuilder:
                 match iterate_method:
                     case x if x == FIRST_ITERATION:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
-                        body.append(("valu", ("multiply_add", tmp_idx_v, vone, vtwo, vparity[tlevel])))
+                        body.append(("valu", ("+", tmp_idx_v, vtwo, vparity[tlevel])))
                     case x if x == PARITY_AWARE:
                         body.append(("valu", ("%", vparity[tlevel], tmp_val_v, vtwo)))
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
@@ -929,7 +942,7 @@ class KernelBuilder:
 
         for i in range(0, batch_size, VLEN):
             vbatch = int(i/VLEN)
-            mb_num = vbatch % self.mb_size
+            mb_num = vbatch % 6
 
             vtmp3 = arr_vtmp3[mb_num]
             vtmp2 = arr_vtmp2[mb_num]
@@ -947,7 +960,11 @@ class KernelBuilder:
                 i_const = self.scratch_const(i)
                 body.append(("alu", ("+", vtmp3, self.scratch["inp_indices_p"], i_const)))
                 body.append(("store", ("vstore", vtmp3, tmp_idx_v)))
-            body.append(("store", ("vstore", value_ptr, tmp_val_v)))
+
+            i_const = self.scratch_const(i)
+            body.append(("alu", ("+", vtmp2, self.scratch["inp_values_p"], i_const)))
+
+            body.append(("store", ("vstore", vtmp2, tmp_val_v)))
 
 
         body_instrs = self.compile_combined(body, debug=False, tag = 'STORE')
@@ -959,18 +976,21 @@ class KernelBuilder:
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
 
-        used = 0
-        total = 0
-        gap = 0
-        for i in self.instrs:
-            for e, slots in i.items():
-                if e == 'debug':
-                    continue
-                if len(slots) < SLOT_LIMITS[e] and e != 'debug':
+        
+        for f in ['valu', 'load', 'store']:
+            used = 0
+            total = 0
+            gap = 0
+            for i in self.instrs:
+                for e, slots in i.items():
+                    if e == 'debug':
+                        continue
+                    if not f == e:
+                        continue
                     gap += SLOT_LIMITS[e] - len(slots)
-                used  += len(slots)
-                total += SLOT_LIMITS[e]
-        print(f'efficiency: {used=} {total=} {gap=} ratio={1.0*used/total}')
+                    used  += len(slots)
+                    total += SLOT_LIMITS[e]
+            print(f'{f} utility: {used=} {total=} {gap=} ratio={1.0*used/total}')
 
         print(f'size of tree:{n_nodes}')
 
@@ -1064,7 +1084,7 @@ class Tests(unittest.TestCase):
     #             )
 
     def test_kernel_cycles(self):
-        # do_kernel_test(10, 1, 16, trace=False, prints=True)
+        # do_kernel_test(10, 3, 16, trace=False, prints=False)
         # do_kernel_test(10, 10, 32, trace=False, prints=False)
         # do_kernel_test(1, 16, 240, trace=False, prints=False)
         do_kernel_test(10, 16, 256, trace=False, prints=False)
