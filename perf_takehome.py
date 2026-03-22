@@ -629,7 +629,7 @@ class KernelBuilder:
         return output
     
     def compile_combined(self, insts, tag, debug = False):
-        g = GraphCompiler(insts, debug=False)
+        g = GraphCompiler(insts, debug=True)
         g.compile()
         goutput = g.build()
 
@@ -1066,10 +1066,10 @@ class KernelBuilder:
 
                 
         # compile everything together
-        debug = False
-        body_instrs = self.compile_combined(body, tag = 'COMPUTE', debug=debug)
-        self.instrs.extend(body_instrs)
-        body = []
+        # debug = False
+        # body_instrs = self.compile_combined(body, tag = 'COMPUTE', debug=debug)
+        # self.instrs.extend(body_instrs)
+        # body = []
 
         for i in range(0, batch_size, VLEN):
             vbatch = int(i/VLEN)
