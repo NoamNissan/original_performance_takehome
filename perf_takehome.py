@@ -889,11 +889,11 @@ class KernelBuilder:
             4: [NORMAL_LOAD,      NORMAL_ITERATE],
             #: [NORMAL_LOAD,    NORMAL_ITERATE],
             10: [NORMAL_LOAD,   WRAPAROUND],
-            11: [BROADCAST_ZERO,AFTER_WRAPAROUND],
-            12: [LOAD_ONE,      AFTER_WRAPAROUND],
-            13: [LOAD_TWO,      AFTER_WRAPAROUND],
-            14: [LOAD_THREE,    AFTER_WRAPAROUND],
-            15: [LOAD_FOUR,     LAST_ITERATION],
+            11: [BROADCAST_ZERO,FIRST_ITERATION],
+            12: [LOAD_ONE,      PARITY_AWARE],
+            13: [LOAD_TWO,      FIRST_NORMAL_ITERATE],
+            14: [NORMAL_LOAD,    NORMAL_ITERATE],
+            15: [NORMAL_LOAD,     LAST_ITERATION],
         }
 
         for vbatch_i in range(0, batch_size, VLEN):
