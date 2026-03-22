@@ -799,7 +799,7 @@ class KernelBuilder:
         const_int =  [self.scratch_const(i) for i in range(CONSTS)]
         vconst = [None, None] + [self.alloc_scratch(f'vconst{i}', VLEN) for i in [2]]
 
-        self.mb_size = 8
+        self.mb_size = 10
         vbatch_size = int(batch_size/VLEN)
 
         # Vector scratch registers
