@@ -837,7 +837,7 @@ class KernelBuilder:
             body.append(("valu", ("-", vf[i-1], vf[i-1], vf[i])))
 
         # This value is the result of the rounds in which we calculate the last xor after calculating parity
-        xor = self.scratch_const(0b1110)
+        xor = self.scratch_const(0b110)
         vxor = self.alloc_scratch('vxor', VLEN)
         body.append(("valu", ("vbroadcast", vxor, xor)))
 
@@ -884,8 +884,8 @@ class KernelBuilder:
         STAGES_DICT = {
             0: [BROADCAST_ZERO, FIRST_ITERATION],
             1: [LOAD_ONE,       PARITY_AWARE],
-            2: [LOAD_TWO,       PARITY_AWARE],
-            3: [LOAD_THREE,     FIRST_NORMAL_ITERATE],
+            2: [LOAD_TWO,       FIRST_NORMAL_ITERATE],
+            3: [NORMAL_LOAD,     NORMAL_ITERATE],
             4: [NORMAL_LOAD,      NORMAL_ITERATE],
             #: [NORMAL_LOAD,    NORMAL_ITERATE],
             10: [NORMAL_LOAD,   WRAPAROUND],
