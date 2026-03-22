@@ -110,7 +110,7 @@ def inst_length(e, op) -> (int, int): # wlength, rlength
         assert False, f'unknown op {e=} {op=}'
     assert False, f'unknown e {e=} {op=}'
 
-def inst_addresses(e, slot):
+def inst_addresses(e, slot) -> (List, List):
     wlength, rlength = inst_length(e, slot[0])
     waddr = slot[1]
     raddr = slot[2:] if slot[0] != 'load_offset' else slot[2:-1]
@@ -244,6 +244,109 @@ class OptimizedInstruction():
     
 ENABLED = True
 
+class GraphCompiler:
+    def __init__(self, insts, debug = False):
+        self.debug = debug
+        self.input = insts
+        self.ancestors = {}
+        self.dependants = {}
+        self.last_written = {}
+        self.last_read = {}
+        self.insts = []
+
+    def ingest(self, i, e, slot):
+        if self.debug:
+            print(f'{i}: [{e}] {slot}')
+        waddr, raddr = inst_addresses(e, slot)
+        ancestors = []
+        for w in waddr+list(raddr):
+            if w in self.last_written:
+                ancestors.append(self.last_written[w])
+        for w in waddr:
+            if w in self.last_read:
+                ancestors.append(self.last_read[w])
+        # ancestors = [self.last_written[w] for w in waddr+list(raddr)]
+        # ancestors += [self.last_read[w] for w in waddr]
+        inst = (i,e,slot)
+
+        self.insts.append(inst)
+        for w in waddr:
+            self.last_written[w] = inst
+        for r in raddr:
+            self.last_read[r] = inst
+
+        self.ancestors[inst] = ancestors
+        self.dependants[inst] = []
+        for an in ancestors:
+            self.dependants[an].append(inst)
+
+    def compile(self):
+        stock = [decompose(i) for i in self.input]
+        index = 0
+        for s in stock:
+            e = s[0]
+            for slot in s[1]:
+                self.ingest(index, e, slot)
+                index += 1
+
+    def available(self):
+        avail = filter(lambda inst: len(self.ancestors[inst])==0, self.insts)
+        return [x for x in avail]
+
+    def deregister(self, dereg):
+        for inst in dereg:
+            for dep in self.dependants[inst]:
+                self.ancestors[dep].remove(inst)
+            self.insts.remove(inst)
+
+    def build(self):
+        flag = True
+        added = False
+
+        output = []
+        
+
+        while flag:
+            available = self.available()
+            if len(available) == 0:
+                break
+            dereg = []
+
+            bundle = defaultdict(lambda: [])
+            for inst in available:
+                i, e, slot = inst
+
+                if len(bundle[e]) < SLOT_LIMITS[e]:
+                    bundle[e].append(slot)
+                    dereg.append(inst)
+                    if self.debug:
+                        print(f'{e}: {slot}')
+
+            if self.debug:
+                print('=====')
+            self.deregister(dereg)
+            output.append(bundle)
+        return output
+            # try to add all available instructions to this bundle
+            # when none added, flush, replanish available
+
+"""
+for lv in sorted(levels.keys()):
+    # How many "rounds" does this level need?
+    n_rounds = max(
+        -(-len(slots) // SLOT_LIMITS[e])   # ceil division
+        for e, slots in levels[lv].items()
+    )
+    for r in range(n_rounds):
+        bundle = {}
+        for e, slots in levels[lv].items():
+            lo, hi = r * SLOT_LIMITS[e], (r+1) * SLOT_LIMITS[e]
+            chunk = slots[lo:hi]
+            if chunk:
+                bundle[e] = chunk
+"""
+
+
 class TreeCompiler:
     def __init__(self, insts, debug = False):
         self.debug = debug
@@ -272,6 +375,10 @@ class TreeCompiler:
             for slot in s[1]:
                 self.ingest(e, slot)
         self.ingested.sort(key=itemgetter(0,1))
+
+        if self.debug:
+            for level, e, slot in self.ingested:
+                print(f'{level}: [{e}] {slot}')
 
         curr_e = ''
         curr_slots = []
@@ -502,6 +609,10 @@ class KernelBuilder:
         return output
     
     def compile_combined(self, insts, tag, debug = False):
+        g = GraphCompiler(insts, debug=debug)
+        g.compile()
+        goutput = g.build()
+
         t = TreeCompiler(insts, debug=False)
         t.compile()
         insts = t.output
@@ -510,7 +621,7 @@ class KernelBuilder:
         compiler.compile()
         output = compiler.build()
         print(f'===== {tag}: before: {len(insts)} after:  {len(output)}')
-        return output
+        return goutput
 
     def build_optimize(self, body: list, batch_size: int, rounds: int):
         effected = []
@@ -675,7 +786,7 @@ class KernelBuilder:
         implemented_height = 4
         arr_vparity = []
         for x in range(self.mb_size):
-            arr_vparity.append([self.alloc_scratch(f'vtmp1_{x}_{y}', VLEN) for y in range(implemented_height)])
+            arr_vparity.append([self.alloc_scratch(f'vparity_{x}_{y}', VLEN) for y in range(implemented_height)])
         arr_vtmp2 = [self.alloc_scratch(f'vtmp2_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp3 = [self.alloc_scratch(f'vtmp3_{i}', VLEN) for i in range(self.mb_size)]
         arr_vtmp4 = [self.alloc_scratch(f'vtmp4_{i}', VLEN) for i in range(self.mb_size)]
@@ -685,7 +796,7 @@ class KernelBuilder:
         if PRESERVE_IDX:
             vone = vconst[1]
         else:
-            vone = arr_vtmp5[0]
+            vone = arr_vtmp4[0]
         vtwo = vconst[2]
         body.append(("valu", ("vbroadcast", vone, const_int[1])))
         body.append(("valu", ("vbroadcast", vtwo, const_int[2])))
@@ -702,7 +813,8 @@ class KernelBuilder:
         vforest_values_p = self.alloc_scratch('vforest_values_p', VLEN)
         body.append(("valu", ("vbroadcast", vforest_values_p, self.scratch['forest_values_p'])))        
 
-        vtree = self.alloc_scratch('vtree', VLEN*4)
+        # vtree = self.alloc_scratch('vtree', VLEN*4)
+        vtree = arr_vtmp5[0]
         ptr = arr_vtmp2[0]
         for i in range(4):
             body.append(("alu", ("<<", arr_vtmp2[i], const_int[i], const_int[3])))
@@ -725,7 +837,7 @@ class KernelBuilder:
             body.append(("valu", ("-", vf[i-1], vf[i-1], vf[i])))
 
         # This value is the result of the rounds in which we calculate the last xor after calculating parity
-        xor = self.scratch_const(0b1111)
+        xor = self.scratch_const(0b11110)
         vxor = self.alloc_scratch('vxor', VLEN)
         body.append(("valu", ("vbroadcast", vxor, xor)))
 
@@ -907,12 +1019,11 @@ class KernelBuilder:
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vparity[tlevel])))
 
                     case x if x == FIRST_NORMAL_ITERATE:
-                        # Fix the mess we did by skipping the last hash
-                        body.append(("valu", ("^", tmp_idx_v, tmp_idx_v, vxor)))
-
                         body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
                         body.append(("valu", ("multiply_add", tmp_idx_v, tmp_idx_v, vtwo, vtmp1)))
 
+                        # Fix the mess we did by skipping the last xor
+                        body.append(("valu", ("^", tmp_idx_v, tmp_idx_v, vxor)))
                         
                     case x if x == NORMAL_ITERATE:
                         body.append(("valu", ("%", vtmp1, tmp_val_v, vtwo)))
@@ -929,8 +1040,8 @@ class KernelBuilder:
                         pass
 
         for vbatch_i in range(0, batch_size, VLEN):
-            tmp_val_v = mega_val_v[vbatch]
             vbatch = int(vbatch_i/VLEN)
+            tmp_val_v = mega_val_v[vbatch]
             body.append(("valu", ("^", tmp_val_v, tmp_val_v, self.hash_consts[5][0])))
 
                 
@@ -976,8 +1087,10 @@ class KernelBuilder:
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
 
-        
-        for f in ['valu', 'load', 'store']:
+        # print(f'finished building kernel')
+        # for i in self.instrs:
+        #     print(i)
+        for f in ['alu', 'valu', 'load', 'store']:
             used = 0
             total = 0
             gap = 0
@@ -995,6 +1108,10 @@ class KernelBuilder:
         print(f'size of tree:{n_nodes}')
 
         print(f'scratch used: {self.scratch_ptr=} out of {SCRATCH_SIZE}')
+
+        # for k in self.scratch_debug:
+        #     v = self.scratch_debug[k]
+        #     print(f'name={v[0]} length={v[1]}')
 
 BASELINE = 147734
 
