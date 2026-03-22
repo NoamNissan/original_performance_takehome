@@ -299,9 +299,19 @@ class GraphCompiler:
                 self.ancestors[dep].remove(inst)
             self.insts.remove(inst)
 
+    def decompose_valu(self, slot):
+
+        slots = []
+        match slot:
+            case ('vbroadcast', dest, src):
+                slots = [('&', dest+i, src, src) for i in range(VLEN)]
+            case (op, dest, a1, a2):
+                slots = [(op, dest+i, a1+i, a2+i) for i in range(VLEN)]
+        assert len(slots)>0, 'error in decompose'
+        return slots
+
     def build(self):
         flag = True
-        added = False
 
         output = []
         
@@ -315,12 +325,22 @@ class GraphCompiler:
             bundle = defaultdict(lambda: [])
             for inst in available:
                 i, e, slot = inst
+                added = False
 
                 if len(bundle[e]) < SLOT_LIMITS[e]:
                     bundle[e].append(slot)
                     dereg.append(inst)
                     if self.debug:
                         print(f'{e}: {slot}')
+                elif e=='valu' and \
+                    slot[0] != 'multiply_add' and \
+                    len(bundle['alu']) + VLEN <= (SLOT_LIMITS['alu']):
+                    slots = self.decompose_valu(slot)
+                    bundle['alu'].extend(slots)
+                    dereg.append(inst)
+                    if self.debug:
+                        for s in slots:
+                            print(f'alu: {s}')
 
             if self.debug:
                 print('=====')
@@ -609,7 +629,7 @@ class KernelBuilder:
         return output
     
     def compile_combined(self, insts, tag, debug = False):
-        g = GraphCompiler(insts, debug=debug)
+        g = GraphCompiler(insts, debug=False)
         g.compile()
         goutput = g.build()
 
