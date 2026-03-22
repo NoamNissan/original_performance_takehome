@@ -837,7 +837,7 @@ class KernelBuilder:
             body.append(("valu", ("-", vf[i-1], vf[i-1], vf[i])))
 
         # This value is the result of the rounds in which we calculate the last xor after calculating parity
-        xor = self.scratch_const(0b11110)
+        xor = self.scratch_const(0b1110)
         vxor = self.alloc_scratch('vxor', VLEN)
         body.append(("valu", ("vbroadcast", vxor, xor)))
 
@@ -885,8 +885,8 @@ class KernelBuilder:
             0: [BROADCAST_ZERO, FIRST_ITERATION],
             1: [LOAD_ONE,       PARITY_AWARE],
             2: [LOAD_TWO,       PARITY_AWARE],
-            3: [LOAD_THREE,     PARITY_AWARE],
-            4: [LOAD_FOUR,      FIRST_NORMAL_ITERATE],
+            3: [LOAD_THREE,     FIRST_NORMAL_ITERATE],
+            4: [NORMAL_LOAD,      NORMAL_ITERATE],
             #: [NORMAL_LOAD,    NORMAL_ITERATE],
             10: [NORMAL_LOAD,   WRAPAROUND],
             11: [BROADCAST_ZERO,AFTER_WRAPAROUND],
@@ -1007,7 +1007,7 @@ class KernelBuilder:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
                 body.extend(self.build_vhash(tmp_val_v, vtmp3, vtmp2, round, i))
 
-                if iterate_method in [FIRST_NORMAL_ITERATE, NORMAL_ITERATE, WRAPAROUND]:
+                if iterate_method in [FIRST_NORMAL_ITERATE, NORMAL_ITERATE, WRAPAROUND, LAST_ITERATION]:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, self.hash_consts[5][0])))
 
                 match iterate_method:
@@ -1039,10 +1039,10 @@ class KernelBuilder:
                     case x if x == LAST_ITERATION:
                         pass
 
-        for vbatch_i in range(0, batch_size, VLEN):
-            vbatch = int(vbatch_i/VLEN)
-            tmp_val_v = mega_val_v[vbatch]
-            body.append(("valu", ("^", tmp_val_v, tmp_val_v, self.hash_consts[5][0])))
+        # for vbatch_i in range(0, batch_size, VLEN):
+        #     vbatch = int(vbatch_i/VLEN)
+        #     tmp_val_v = mega_val_v[vbatch]
+        #     body.append(("valu", ("^", tmp_val_v, tmp_val_v, self.hash_consts[5][0])))
 
                 
         # compile everything together
