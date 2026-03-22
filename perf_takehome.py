@@ -629,7 +629,7 @@ class KernelBuilder:
         return output
     
     def compile_combined(self, insts, tag, debug = False):
-        g = GraphCompiler(insts, debug=True)
+        g = GraphCompiler(insts, debug=False)
         g.compile()
         goutput = g.build()
 
@@ -1093,9 +1093,9 @@ class KernelBuilder:
                 body.append(("store", ("vstore", vtmp3, tmp_idx_v)))
 
             i_const = self.scratch_const(i)
-            body.append(("alu", ("+", vtmp2, self.scratch["inp_values_p"], i_const)))
+            body.append(("alu", ("+", value_ptr, self.scratch["inp_values_p"], i_const)))
 
-            body.append(("store", ("vstore", vtmp2, tmp_val_v)))
+            body.append(("store", ("vstore", value_ptr, tmp_val_v)))
 
 
         body_instrs = self.compile_combined(body, debug=False, tag = 'STORE')
