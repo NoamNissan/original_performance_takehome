@@ -803,20 +803,20 @@ class KernelBuilder:
         vbatch_size = int(batch_size/VLEN)
 
         # Vector scratch registers
-        implemented_height = 4
+        implemented_height = 2
         arr_vparity = []
         for x in range(self.mb_size):
             arr_vparity.append([self.alloc_scratch(f'vparity_{x}_{y}', VLEN) for y in range(implemented_height)])
         arr_vtmp2 = [self.alloc_scratch(f'vtmp2_{i}', VLEN) for i in range(self.mb_size)]
-        arr_vtmp3 = [self.alloc_scratch(f'vtmp3_{i}', VLEN) for i in range(self.mb_size)]
-        arr_vtmp4 = [self.alloc_scratch(f'vtmp4_{i}', VLEN) for i in range(self.mb_size)]
-        arr_vtmp5 = [self.alloc_scratch(f'vtmp5_{i}', VLEN) for i in range(self.mb_size)]
+        # arr_vtmp3 = [self.alloc_scratch(f'vtmp3_{i}', VLEN) for i in range(self.mb_size)]
+        # arr_vtmp4 = [self.alloc_scratch(f'vtmp4_{i}', VLEN) for i in range(self.mb_size)]
+        # arr_vtmp5 = [self.alloc_scratch(f'vtmp5_{i}', VLEN) for i in range(self.mb_size)]
 
         PRESERVE_IDX = False
         if PRESERVE_IDX:
             vone = vconst[1]
         else:
-            vone = arr_vtmp4[0]
+            vone = arr_vtmp2[self.mb_size-1]
         vtwo = vconst[2]
         body.append(("valu", ("vbroadcast", vone, const_int[1])))
         body.append(("valu", ("vbroadcast", vtwo, const_int[2])))
@@ -834,17 +834,17 @@ class KernelBuilder:
         body.append(("valu", ("vbroadcast", vforest_values_p, self.scratch['forest_values_p'])))        
 
         # vtree = self.alloc_scratch('vtree', VLEN*4)
-        vtree = arr_vtmp5[0]
-        ptr = arr_vtmp2[0]
+        vtree = arr_vtmp2[0]
+        # ptr = arr_vtmp2[0]
         for i in range(4):
             body.append(("alu", ("<<", arr_vtmp2[i], const_int[i], const_int[3])))
-            body.append(("alu", ("+",  arr_vtmp3[i], arr_vtmp2[i], self.scratch['forest_values_p'])))
+            body.append(("alu", ("+",  arr_tmp_node_val_v[i], arr_vtmp2[i], self.scratch['forest_values_p'])))
 
         for i in range(4):
-            body.append(("load", ("vload", vtree+i*VLEN, arr_vtmp3[i])))
+            body.append(("load", ("vload", vtree+i*VLEN, arr_tmp_node_val_v[i])))
 
 
-        NUM_STORED_VF = 2**5-1
+        NUM_STORED_VF = 2**3-1
 
         for i in range(1, NUM_STORED_VF):
             body.append(("alu", ("^", vtree+i, vtree+i, self.scratch_const(HASH_STAGES[5][1]))))
@@ -905,15 +905,15 @@ class KernelBuilder:
             0: [BROADCAST_ZERO, FIRST_ITERATION],
             1: [LOAD_ONE,       PARITY_AWARE],
             2: [LOAD_TWO,       FIRST_NORMAL_ITERATE],
-            3: [NORMAL_LOAD,     NORMAL_ITERATE],
-            4: [NORMAL_LOAD,      NORMAL_ITERATE],
+            3: [NORMAL_LOAD,    NORMAL_ITERATE],
+            4: [NORMAL_LOAD,    NORMAL_ITERATE],
             #: [NORMAL_LOAD,    NORMAL_ITERATE],
             10: [NORMAL_LOAD,   WRAPAROUND],
             11: [BROADCAST_ZERO,FIRST_ITERATION],
             12: [LOAD_ONE,      PARITY_AWARE],
             13: [LOAD_TWO,      FIRST_NORMAL_ITERATE],
-            14: [NORMAL_LOAD,    NORMAL_ITERATE],
-            15: [NORMAL_LOAD,     LAST_ITERATION],
+            14: [NORMAL_LOAD,   NORMAL_ITERATE],
+            15: [NORMAL_LOAD,   LAST_ITERATION],
         }
 
         for vbatch_i in range(0, batch_size, VLEN):
@@ -929,12 +929,12 @@ class KernelBuilder:
 
                 tlevel = round % (forest_height+1)
                 vparity = arr_vparity[mb_num]
-                vtmp1 = vparity[3]
+                vtmp1 = vparity[1]
 
                 vtmp2 = arr_vtmp2[mb_num]
-                vtmp3 = arr_vtmp3[mb_num]
-                vtmp4 = arr_vtmp4[mb_num]
-                vtmp5 = arr_vtmp5[mb_num]
+                # vtmp3 = arr_vtmp3[mb_num]
+                # vtmp4 = arr_vtmp4[mb_num]
+                # vtmp5 = arr_vtmp5[mb_num]
 
                 tmp_idx_v = mega_idx_v[vbatch]
                 tmp_val_v = mega_val_v[vbatch]
@@ -1025,7 +1025,7 @@ class KernelBuilder:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, vf[0])))
                 else:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, tmp_node_val_v)))
-                body.extend(self.build_vhash(tmp_val_v, vtmp3, vtmp2, round, i))
+                body.extend(self.build_vhash(tmp_val_v, vtmp1, vtmp2, round, i))
 
                 if iterate_method in [FIRST_NORMAL_ITERATE, NORMAL_ITERATE, WRAPAROUND, LAST_ITERATION]:
                     body.append(("valu", ("^", tmp_val_v, tmp_val_v, self.hash_consts[5][0])))
@@ -1075,7 +1075,7 @@ class KernelBuilder:
             vbatch = int(i/VLEN)
             mb_num = vbatch % self.mb_size
 
-            vtmp3 = arr_vtmp3[mb_num]
+            
             vtmp2 = arr_vtmp2[mb_num]
 
             tmp_idx_v = mega_idx_v[vbatch]
@@ -1086,6 +1086,7 @@ class KernelBuilder:
             # mem[inp_indices_p + i] = idx
             # mem[inp_values_p + i] = val
             if PRESERVE_IDX:
+                vtmp3 = arr_vtmp3[mb_num]
                 # one last -1
                 body.append(("valu", ("-", tmp_idx_v, tmp_idx_v, vone)))
                 i_const = self.scratch_const(i)
