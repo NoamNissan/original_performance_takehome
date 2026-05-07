@@ -269,16 +269,19 @@ class Machine:
     def load(self, core, *slot):
         match slot:
             case ("load", dest, addr):
+                # print(f'LOAD: {dest=} {addr=} {core.scratch[addr]=}')
                 # print(dest, addr, core.scratch[addr])
                 self.scratch_write[dest] = self.mem[core.scratch[addr]]
             case ("load_offset", dest, addr, offset):
                 # Handy for treating vector dest and addr as a full block in the mini-compiler if you want
+                assert core.scratch[addr + offset] <= len(self.mem), f'self.mem is out of range at {core.scratch[addr + offset]}: {dest=} {addr=} {offset=}'
                 self.scratch_write[dest + offset] = self.mem[
                     core.scratch[addr + offset]
                 ]
             case ("vload", dest, addr):  # addr is a scalar
                 addr = core.scratch[addr]
                 for vi in range(VLEN):
+                    # print(f'dest=scratch-{dest + vi} src=mem-{addr+vi}')
                     self.scratch_write[dest + vi] = self.mem[addr + vi]
             case ("const", dest, val):
                 self.scratch_write[dest] = (val) % (2**32)
@@ -291,8 +294,10 @@ class Machine:
                 addr = core.scratch[addr]
                 self.mem_write[addr] = core.scratch[src]
             case ("vstore", addr, src):  # addr is a scalar
+                # print(f'{addr=} {core.scratch[addr]=}')
                 addr = core.scratch[addr]
                 for vi in range(VLEN):
+                    # print(f'dest=mem-{addr+vi} src=scratch-{src+vi}')
                     self.mem_write[addr + vi] = core.scratch[src + vi]
             case _:
                 raise NotImplementedError(f"Unknown store op {slot}")
@@ -388,6 +393,8 @@ class Machine:
         for addr, val in self.scratch_write.items():
             core.scratch[addr] = val
         for addr, val in self.mem_write.items():
+            if addr >= len(self.mem):
+                print(f'{addr=}')
             self.mem[addr] = val
 
         if self.trace:
@@ -488,14 +495,15 @@ def build_mem_image(t: Tree, inp: Input) -> list[int]:
     """
     Build a flat memory image of the problem.
     """
-    header = 7
+    header = 8
     extra_room = len(t.values) + len(inp.indices) * 2 + VLEN * 2 + 32
     mem = [0] * (
         header + len(t.values) + len(inp.indices) + len(inp.values) + extra_room
     )
+    print(f'{len(mem)=} {extra_room=}')
     forest_values_p = header
     inp_indices_p = forest_values_p + len(t.values)
-    inp_values_p = inp_indices_p + len(inp.values)
+    inp_values_p = inp_indices_p + len(inp.indices)
     extra_room = inp_values_p + len(inp.values)
 
     mem[0] = inp.rounds
@@ -506,10 +514,16 @@ def build_mem_image(t: Tree, inp: Input) -> list[int]:
     mem[5] = inp_indices_p
     mem[6] = inp_values_p
     mem[7] = extra_room
+    print(f'mem[7] = extra_room : {mem[7]=} {extra_room=}')
 
-    mem[header:inp_indices_p] = t.values
+    mem[forest_values_p:inp_indices_p] = t.values
     mem[inp_indices_p:inp_values_p] = inp.indices
-    mem[inp_values_p:] = inp.values
+    print(f'before overwrite: {len(mem)=} {extra_room=}')
+
+    mem[inp_values_p:extra_room] = inp.values
+    print(f'{len(t.values)=} {len(inp.indices)=} {len(inp.values)=}')
+    print(f'mem[7] = extra_room : {mem[6]=} {mem[7]=} {extra_room=} {len(mem)=}')
+
     return mem
 
 
